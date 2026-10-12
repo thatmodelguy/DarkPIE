@@ -140,7 +140,7 @@ std::string Vm::targetPath(const Expr& expr, DeviceBus& bus) {
         if (obj.empty()) return mem->name;
         return obj + "." + mem->name;
     }
-    if (auto* bin = dynamic_cast<const BinaryExpr*>(&expr); bin && bin->op == "+") {
+    if (auto* bin = dynamic_cast<const BinaryExpr*>(&expr); bin && (bin->op == "+" || bin->op == "and")) {
         return targetPath(*bin->left, bus) + "+" + targetPath(*bin->right, bus);
     }
     return eval(expr, bus).asString();

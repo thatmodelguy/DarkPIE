@@ -663,6 +663,16 @@ ExprPtr Parser::factor() {
 }
 
 ExprPtr Parser::unary() {
+    if (match(TokenKind::Caret) && (check(TokenKind::Identifier) || check(TokenKind::Number))) {
+        Token key = consume();
+        auto name = std::make_unique<NameExpr>();
+        name->line = key.line;
+        std::string id = key.text;
+        if (key.kind == TokenKind::Number && std::floor(key.number) == key.number)
+            id = std::to_string(static_cast<long long>(key.number));
+        name->name = "ctrl+" + id;
+        return name;
+    }
     if (match(TokenKind::Not) || match(TokenKind::Minus)) {
         Token op = tokens_[i_ - 1];
         auto u = std::make_unique<UnaryExpr>();

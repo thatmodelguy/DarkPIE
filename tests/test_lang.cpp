@@ -695,6 +695,29 @@ int main() {
         check(!vm.hasError(), "Kalman does not abort the script");
         check(bus.get("mouse.cursorpos").kind == ValueKind::Vector, "mouse.CursorPos is a vector");
     }
+    {
+        Program p = parse("Key.ctrl+t = KeepDown(Microphone.Said(\"transform\"), .15)\n"
+                          "Key.ctrl+j = KeepDown(Microphone.Said(\"new layer\"), .10)\n"
+                          "^C = KeepDown(said(\"copy\"), 0.2)\n");
+        if (!p.error.empty()) std::cerr << "combo parse: " << p.error << " line " << p.errorLine << "\n";
+        check(p.error.empty(), "parse Key.ctrl+t KeepDown combos");
+        check(KeyboardDevice::isKnownKey("ctrl+t"), "ctrl+t is a known combo");
+        check(KeyboardDevice::isKnownKey("ctrl+j"), "ctrl+j is a known combo");
+        DeviceBus bus;
+        bus.dryRun = true;
+        Vm vm;
+        vm.load(parse("Key.ctrl+t = true\n"));
+        bus.beginFrame();
+        vm.tick(bus);
+        bus.endFrame();
+        check(bus.keyboard().heldThisFrame().count("ctrl") > 0, "ctrl+t holds ctrl");
+        check(bus.keyboard().heldThisFrame().count("t") > 0, "ctrl+t holds t");
+        vm.load(parse("var.k = KeepDown(true, .15)\n"));
+        bus.beginFrame();
+        vm.tick(bus);
+        bus.endFrame();
+        check(bus.getVar("k").isTruthy(), "KeepDown .15 parses as 0.15s");
+    }
 
     if (g_failed) {
         std::cerr << g_failed << " test(s) failed\n";

@@ -43,6 +43,60 @@ bool parseScanName(const std::string& key, WORD& scan) {
     return true;
 }
 
+std::string trimCopy(std::string s) {
+    while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) s.erase(s.begin());
+    while (!s.empty() && (s.back() == ' ' || s.back() == '\t')) s.pop_back();
+    return s;
+}
+
+std::vector<std::string> splitKeyCombo(std::string s) {
+    for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    s.erase(std::remove(s.begin(), s.end(), '_'), s.end());
+    if (!s.empty() && s[0] == '^') s = "ctrl+" + s.substr(1);
+    std::string flat;
+    for (size_t i = 0; i < s.size();) {
+        if (i + 3 <= s.size() && s.compare(i, 3, "and") == 0) {
+            const bool leftOk = i == 0 || !std::isalnum(static_cast<unsigned char>(s[i - 1]));
+            const bool rightOk = i + 3 == s.size() || !std::isalnum(static_cast<unsigned char>(s[i + 3]));
+            if (leftOk && rightOk) {
+                flat.push_back('+');
+                i += 3;
+                continue;
+            }
+        }
+        flat.push_back(s[i]);
+        ++i;
+    }
+    std::vector<std::string> parts;
+    std::string cur;
+    for (char c : flat) {
+        if (c == '+') {
+            cur = trimCopy(cur);
+            if (!cur.empty()) parts.push_back(cur);
+            cur.clear();
+        } else {
+            cur.push_back(c);
+        }
+    }
+    cur = trimCopy(cur);
+    if (!cur.empty()) parts.push_back(cur);
+    for (auto& p : parts) {
+        if (p.rfind("key.", 0) == 0) p = p.substr(4);
+        else if (p.rfind("keyboard.", 0) == 0) p = p.substr(9);
+    }
+    return parts;
+}
+
+int appCommandFor(const std::string& key);
+
+bool isSingleKeyName(const std::string& key, const std::unordered_map<std::string, unsigned short>& map) {
+    wchar_t ch = 0;
+    WORD scan = 0;
+    if (parseUnicodeName(key, ch) || parseScanName(key, scan) || appCommandFor(key)) return true;
+    auto it = map.find(key);
+    return it != map.end();
+}
+
 int appCommandFor(const std::string& key) {
     if (key == "undo") return APPCOMMAND_UNDO;
     if (key == "redo") return APPCOMMAND_REDO;
@@ -250,13 +304,14 @@ std::string KeyboardDevice::canonicalize(std::string name) {
 }
 
 bool KeyboardDevice::isKnownKey(const std::string& name) {
-    std::string key = canonicalize(name);
-    wchar_t ch = 0;
-    WORD scan = 0;
-    if (parseUnicodeName(key, ch) || parseScanName(key, scan)) return true;
+    auto parts = splitKeyCombo(name);
+    if (parts.empty()) return false;
     KeyboardDevice dummy;
     dummy.dryRun = true;
-    return dummy.map_.count(key) > 0;
+    for (const auto& p : parts) {
+        if (!isSingleKeyName(p, dummy.map_)) return false;
+    }
+    return true;
 }
 
 unsigned short KeyboardDevice::vkFor(const std::string& name) const {
@@ -294,7 +349,14 @@ void KeyboardDevice::sendNamed(const std::string& key, bool down) {
 }
 
 Value KeyboardDevice::get(const std::string& keyName) {
-    std::string key = canonicalize(keyName);
+    auto parts = splitKeyCombo(keyName);
+    if (parts.size() > 1) {
+        for (const auto& p : parts) {
+            if (!get(p).isTruthy()) return Value::boolean(false);
+        }
+        return Value::boolean(true);
+    }
+    std::string key = parts.empty() ? canonicalize(keyName) : parts[0];
     if (key == "anykey") return Value::boolean(anyKeyDown());
     if (key == "count") return Value::number(keyboardCount());
     if (key == "exists") return Value::boolean(keyboardCount() > 0);
@@ -344,7 +406,12 @@ void KeyboardDevice::sendUnicode(wchar_t ch, bool down) {
 }
 
 void KeyboardDevice::setHeld(const std::string& keyName, bool down) {
-    std::string key = canonicalize(keyName);
+    auto parts = splitKeyCombo(keyName);
+    if (parts.size() > 1) {
+        for (const auto& p : parts) setHeld(p, down);
+        return;
+    }
+    std::string key = parts.empty() ? canonicalize(keyName) : parts[0];
     wchar_t ch = 0;
     WORD scan = 0;
     if (!map_.count(key) && !parseUnicodeName(key, ch) && !parseScanName(key, scan) && !appCommandFor(key))
@@ -354,18 +421,20 @@ void KeyboardDevice::setHeld(const std::string& keyName, bool down) {
 }
 
 void KeyboardDevice::press(const std::string& keyName) {
-    std::string key = canonicalize(keyName);
-    sendNamed(key, true);
-    sendNamed(key, false);
+    auto parts = splitKeyCombo(keyName);
+    if (parts.empty()) return;
+    for (const auto& p : parts) sendNamed(p, true);
+    for (auto it = parts.rbegin(); it != parts.rend(); ++it) sendNamed(*it, false);
 }
 
 void KeyboardDevice::release(const std::string& keyName) {
-    unsigned short vk = vkFor(keyName);
-    if (!vk) return;
-    std::string key = canonicalize(keyName);
-    desiredHeld_.erase(key);
-    sendVk(vk, false);
-    physicallyHeld_.erase(key);
+    auto parts = splitKeyCombo(keyName);
+    for (const auto& p : parts) {
+        unsigned short vk = vkFor(p);
+        desiredHeld_.erase(p);
+        if (vk) sendVk(vk, false);
+        physicallyHeld_.erase(p);
+    }
 }
 
 void KeyboardDevice::releaseAllHeld() { desiredHeld_.clear(); }
@@ -392,10 +461,13 @@ void KeyboardDevice::setProperty(const std::string& name, const Value& value) {
 }
 
 void KeyboardDevice::swallow(const std::string& keyName, bool on) {
-    unsigned short vk = vkFor(keyName);
-    if (!vk) return;
-    if (on) swallowedVk_.insert(vk);
-    else swallowedVk_.erase(vk);
+    auto parts = splitKeyCombo(keyName);
+    for (const auto& p : parts) {
+        unsigned short vk = vkFor(p);
+        if (!vk) continue;
+        if (on) swallowedVk_.insert(vk);
+        else swallowedVk_.erase(vk);
+    }
     if (!swallowedVk_.empty()) installSwallowHook();
     else removeSwallowHook();
 }

@@ -1,0 +1,6 @@
+<RCC>
+    <qresource prefix="/icons">
+        <file alias="darkpie.png">darkpie.png</file>
+        <file alias="darkpie.ico">darkpie.ico</file>
+    </qresource>
+</RCC>

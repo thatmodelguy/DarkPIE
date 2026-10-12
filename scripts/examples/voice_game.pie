@@ -1,0 +1,152 @@
+if said("walk")
+w=1
+s=0
+d=0
+a=0
+shift=0
+alt=0
+endif
+if said("Move left")
+a=1
+w=0
+s=0
+d=0
+endif
+if said("Move right")
+d=1
+a=0
+s=0
+w=0
+endif
+if said("go backward")
+s=1
+w=0
+a=0
+d=0
+endif
+
+if said("halt")
+w=0 
+s=0
+a=0
+d=0
+shift=0
+alt=0
+endif
+if said("sprint")
+shift=1
+end if
+if said("lean left")
+a=1
+alt=1
+end if
+if said("lean right")
+d=1
+alt=1
+end if
+Key.W = KeepDown(Microphone.Said("step foward"), .50)
+//	menu controls
+Key.s = KeepDown(Microphone.Said("go down"), .10)
+Key.w = KeepDown(Microphone.Said("go up"), .10)
+Key.a = KeepDown(Microphone.Said("go left"), .10)
+Key.d = KeepDown(Microphone.Said("go right"), .10)
+Key.Enter = KeepDown(Microphone.Said("SELECT"), .10)
+Key.Esc = KeepDown(Microphone.Said("pause game"), .10)
+mouse.leftbutton= KeepDown(Microphone.Said("ok"), .10)
+////////////////////////////////////////////////////////////////controls
+Key.c = KeepDown(Microphone.Said("crouch"), .10)
+Key.e = KeepDown(Microphone.Said("use"), .10)
+Key.e = KeepDown(Microphone.Said("interact"), 2)
+toggle(key.ctrl)=said("radio")
+
+Key.f = KeepDown(Microphone.Said("flashlight"), .10)
+Key.r = KeepDown(Microphone.Said("reload"), .10)
+Key.q = KeepDown(Microphone.Said("holster"), .10)
+//toggle(mouse.middlebutton)=said("weapon wheel")
+
+Key.tab = KeepDown(Microphone.Said("cancel"), .10)
+Key.tab = KeepDown(Microphone.Said("confirm"), 2)
+Key.i = KeepDown(Microphone.Said("inventory"), .10)
+Key.m = KeepDown(Microphone.Said("world map"), .10)
+Key.j = KeepDown(Microphone.Said("journal"), .10)
+Key.space = KeepDown(Microphone.Said("combine"), .10)
+
+
+//Key. = KeepDown(Microphone.Said(""), .10)
+////////////////////////////////////////////////////////////////mouse controls
+mouse.leftbutton = KeepDown(Microphone.Said("fire"), .10)
+mouse.rightbutton = KeepDown(Microphone.Said("close"), .10)
+mouse.wheelup = KeepDown(Microphone.Said("scroll up"), .10)
+mouse.wheeldown = KeepDown(Microphone.Said("scroll down"), .10)
+////////////////////////////////////////////////////////////////
+if said("shield")
+mouse.leftbutton = 0
+var.y = false
+mouse.rightbutton = 1
+end if
+///////////////////////////////////////////////
+if said("throw")
+mouse.rightbutton = 1
+wait .50
+mouse.leftbutton = 1
+wait .10
+mouse.leftbutton = 0
+wait .10
+mouse.rightbutton = 0
+end if
+///////////////////////////////////////////////
+toggle(mouse.rightbutton)=said("aim") 
+///////////////////////////////////////////////
+toggle(mouse.leftbutton)=said("pull back")
+///////////////////////////////////////////////
+if said("fight")
+var.y = false
+Mouse.rightButton= 0
+wait .01
+var.y = true
+wait .50
+var.y = false
+end if
+if var.y = true then
+mouse.leftbutton = 1
+wait .10
+mouse.leftbutton = 0
+wait .10
+end if
+///////////////////////////////////////////////
+if said("struggle")
+var.a = false
+wait .01
+var.a = true
+wait 2
+var.a = false
+end if
+if var.a = true then
+e = 1
+wait .10
+e = 0
+wait .10
+end if
+///////////////////////////////////////////////
+if said(" release")
+Mouse.rightButton= 0
+mouse.middlebutton = 0
+mouse.leftbutton = 0
+ctrl=0
+end if
+///////////////////////////////////////////////
+var.rate = 12 Hz
+if KeepDown(Microphone.Said("scroll right"),.50)
+Mouse.wheelup = true
+wait 0.20/var.rate
+Mouse.wheelup = false
+wait 0.20/var.rate
+end if
+///////////////////////////////////////////////
+var.rate = 12 Hz
+if KeepDown(Microphone.Said("scroll left"),.50)
+Mouse.wheeldown = true
+wait 0.20/var.rate
+Mouse.wheeldown = false
+wait 0.20/var.rate
+end if

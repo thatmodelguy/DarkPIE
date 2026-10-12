@@ -1,0 +1,18 @@
+// OpenPIE / GlovePIE example — speech to keyboard
+// Say the phrases into the microphone while the script is running.
+
+Key.Enter = said("jump")
+Key.F1 = said("fire", 2) or said("shoot", 2)
+
+if said("open notepad", 5) then
+  Press(Key.LeftWindows)
+  wait 100 ms
+  Type("notepad")
+  Press(Key.Enter)
+end if
+
+if said("hello") then
+  say("Ready")
+end if
+
+debug = microphone.CompletePhrase

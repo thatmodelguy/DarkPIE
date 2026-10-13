@@ -718,6 +718,21 @@ int main() {
         bus.endFrame();
         check(bus.getVar("k").isTruthy(), "KeepDown .15 parses as 0.15s");
     }
+    {
+        Program p = parse("Key.alt+backspace = KeepDown(Microphone.Said(\"undo that\"), .10)\n");
+        if (!p.error.empty()) std::cerr << "alt+backspace parse: " << p.error << " line " << p.errorLine << "\n";
+        check(p.error.empty(), "parse Key.alt+backspace KeepDown");
+        check(KeyboardDevice::isKnownKey("alt+backspace"), "alt+backspace is a known combo");
+        DeviceBus bus;
+        bus.dryRun = true;
+        Vm vm;
+        vm.load(parse("Key.alt+backspace = true\n"));
+        bus.beginFrame();
+        vm.tick(bus);
+        bus.endFrame();
+        check(bus.keyboard().heldThisFrame().count("alt") > 0, "alt+backspace holds alt");
+        check(bus.keyboard().heldThisFrame().count("backspace") > 0, "alt+backspace holds backspace");
+    }
 
     if (g_failed) {
         std::cerr << g_failed << " test(s) failed\n";

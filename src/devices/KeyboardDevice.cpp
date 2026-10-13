@@ -138,6 +138,8 @@ KeyboardDevice::KeyboardDevice() {
     add("spacebar", VK_SPACE);
     add("tab", VK_TAB);
     add("backspace", VK_BACK);
+    add("bksp", VK_BACK);
+    add("bsp", VK_BACK);
     add("delete", VK_DELETE);
     add("del", VK_DELETE);
     add("insert", VK_INSERT);
@@ -377,22 +379,54 @@ Value KeyboardDevice::get(const std::string& keyName) {
     return Value::boolean((GetAsyncKeyState(vk) & 0x8000) != 0);
 }
 
+bool isModifierVk(unsigned short vk) {
+    return vk == VK_SHIFT || vk == VK_LSHIFT || vk == VK_RSHIFT ||
+           vk == VK_CONTROL || vk == VK_LCONTROL || vk == VK_RCONTROL ||
+           vk == VK_MENU || vk == VK_LMENU || vk == VK_RMENU ||
+           vk == VK_LWIN || vk == VK_RWIN;
+}
+
+bool isModifierKeyName(const std::string& key) {
+    return key == "shift" || key == "lshift" || key == "leftshift" ||
+           key == "rshift" || key == "rightshift" ||
+           key == "ctrl" || key == "control" || key == "lctrl" || key == "leftctrl" ||
+           key == "leftcontrol" || key == "lcontrol" || key == "rctrl" ||
+           key == "rightctrl" || key == "rightcontrol" ||
+           key == "alt" || key == "lalt" || key == "leftalt" || key == "ralt" ||
+           key == "rightalt" ||
+           key == "windows" || key == "win" || key == "leftwindows" || key == "lwin" ||
+           key == "rightwindows" || key == "rwin";
+}
+
+unsigned short injectVk(unsigned short vk) {
+    if (vk == VK_MENU) return VK_LMENU;
+    if (vk == VK_CONTROL) return VK_LCONTROL;
+    if (vk == VK_SHIFT) return VK_LSHIFT;
+    return vk;
+}
+
 void KeyboardDevice::sendVk(unsigned short vk, bool down) {
     if (dryRun || !vk) return;
+    vk = injectVk(vk);
+    const bool modifier = isModifierVk(vk);
     const bool extended = vk == VK_INSERT || vk == VK_DELETE || vk == VK_HOME || vk == VK_END ||
                           vk == VK_PRIOR || vk == VK_NEXT || vk == VK_LEFT || vk == VK_RIGHT ||
                           vk == VK_UP || vk == VK_DOWN || vk == VK_NUMLOCK || vk == VK_DIVIDE ||
                           vk == VK_RCONTROL || vk == VK_RMENU || vk == VK_LWIN || vk == VK_RWIN ||
                           vk == VK_APPS;
-    WORD scan = static_cast<WORD>(MapVirtualKey(vk, MAPVK_VK_TO_VSC_EX));
-    if (scan == 0) scan = static_cast<WORD>(MapVirtualKey(vk, MAPVK_VK_TO_VSC));
+    WORD mapped = static_cast<WORD>(MapVirtualKey(vk, MAPVK_VK_TO_VSC_EX));
+    if (mapped == 0) mapped = static_cast<WORD>(MapVirtualKey(vk, MAPVK_VK_TO_VSC));
+    WORD scan = mapped & 0xFF;
 
     INPUT in{};
     in.type = INPUT_KEYBOARD;
     in.ki.wVk = vk;
     in.ki.wScan = scan;
-    in.ki.dwFlags = KEYEVENTF_SCANCODE | (extended ? KEYEVENTF_EXTENDEDKEY : 0) |
-                    (down ? 0 : KEYEVENTF_KEYUP);
+    // Modifiers must go in as virtual keys (VK_LMENU, not a generic VK_MENU scancode)
+    // so Win32 apps see Alt/Ctrl/Shift held when the second key arrives.
+    DWORD flags = (extended ? KEYEVENTF_EXTENDEDKEY : 0) | (down ? 0 : KEYEVENTF_KEYUP);
+    if (!modifier) flags |= KEYEVENTF_SCANCODE;
+    in.ki.dwFlags = flags;
     SendInput(1, &in, sizeof(INPUT));
 }
 
@@ -519,16 +553,31 @@ void KeyboardDevice::reset() {
 }
 
 void KeyboardDevice::endFrame() {
+    std::vector<std::string> toPress;
     for (const auto& key : desiredHeld_) {
-        if (!physicallyHeld_.count(key)) {
-            sendNamed(key, true);
-            physicallyHeld_.insert(key);
-        }
+        if (!physicallyHeld_.count(key)) toPress.push_back(key);
     }
+    std::sort(toPress.begin(), toPress.end(), [](const std::string& a, const std::string& b) {
+        const int pa = isModifierKeyName(a) ? 0 : 1;
+        const int pb = isModifierKeyName(b) ? 0 : 1;
+        if (pa != pb) return pa < pb;
+        return a < b;
+    });
+    for (const auto& key : toPress) {
+        sendNamed(key, true);
+        physicallyHeld_.insert(key);
+    }
+
     std::vector<std::string> toRelease;
     for (const auto& key : physicallyHeld_) {
         if (!desiredHeld_.count(key)) toRelease.push_back(key);
     }
+    std::sort(toRelease.begin(), toRelease.end(), [](const std::string& a, const std::string& b) {
+        const int pa = isModifierKeyName(a) ? 1 : 0;
+        const int pb = isModifierKeyName(b) ? 1 : 0;
+        if (pa != pb) return pa < pb;
+        return a < b;
+    });
     for (const auto& key : toRelease) {
         sendNamed(key, false);
         physicallyHeld_.erase(key);

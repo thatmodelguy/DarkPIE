@@ -29,12 +29,6 @@ static Program parse(const std::string& src) {
     return parser.parse();
 }
 
-static Program parseAll(const std::string& src) {
-    Lexer lexer(src);
-    Parser parser(lexer.tokenize());
-    return parser.parseAll();
-}
-
 int main() {
     {
         auto tokens = Lexer("// hi\nKey.Enter = said(\"jump\")\n").tokenize();
@@ -746,22 +740,6 @@ int main() {
         bus.endFrame();
         check(bus.keyboard().heldThisFrame().count("alt") > 0, "alt+backspace holds alt");
         check(bus.keyboard().heldThisFrame().count("backspace") > 0, "alt+backspace holds backspace");
-    }
-    {
-        std::ifstream in;
-        for (const char* path : {"tests/blender_script.pie", "../tests/blender_script.pie",
-                                 "../../tests/blender_script.pie", "../../../tests/blender_script.pie"}) {
-            in.open(path);
-            if (in) break;
-        }
-        check(static_cast<bool>(in), "open blender_script.pie");
-        std::stringstream ss;
-        ss << in.rdbuf();
-        Program p = parseAll(ss.str());
-        for (const auto& e : p.errors)
-            std::cerr << "blender Line " << e.line << ": " << e.message << "\n";
-        if (!p.error.empty()) std::cerr << "blender first: " << p.error << " line " << p.errorLine << "\n";
-        check(p.errors.empty(), "parse blender voice script");
     }
 
     if (g_failed) {

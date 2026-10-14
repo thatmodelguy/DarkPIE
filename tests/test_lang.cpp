@@ -29,6 +29,12 @@ static Program parse(const std::string& src) {
     return parser.parse();
 }
 
+static Program parseAll(const std::string& src) {
+    Lexer lexer(src);
+    Parser parser(lexer.tokenize());
+    return parser.parseAll();
+}
+
 int main() {
     {
         auto tokens = Lexer("// hi\nKey.Enter = said(\"jump\")\n").tokenize();
@@ -306,6 +312,14 @@ int main() {
         Program p = parse("if said(\"walk\")\nw=1\nendif\nif said(\"halt\")\nw=0\nendif\n");
         check(p.error.empty(), "endif does not eat the next if");
         check(p.statements.size() == 2, "two if statements after endif");
+    }
+    {
+        Program p = parse("if said(\"add object\")\nshift=1\nend if\nend if\n"
+                          "if said(\"release\")\nctrl=0\nend if\n"
+                          "if KeepDown(said(\"scroll in\"),1)\nwait 0.20/var.rate\nend if\n");
+        if (!p.error.empty()) std::cerr << "extra endif: " << p.error << " line " << p.errorLine << "\n";
+        check(p.error.empty(), "extra end if is ignored like GlovePIE");
+        check(p.statements.size() == 3, "extra end if does not drop later ifs");
     }
     {
         Program p = parse("Key.W = KeepDown(Microphone.Said(\"step foward\"), .50)\n"
@@ -732,6 +746,22 @@ int main() {
         bus.endFrame();
         check(bus.keyboard().heldThisFrame().count("alt") > 0, "alt+backspace holds alt");
         check(bus.keyboard().heldThisFrame().count("backspace") > 0, "alt+backspace holds backspace");
+    }
+    {
+        std::ifstream in;
+        for (const char* path : {"tests/blender_script.pie", "../tests/blender_script.pie",
+                                 "../../tests/blender_script.pie", "../../../tests/blender_script.pie"}) {
+            in.open(path);
+            if (in) break;
+        }
+        check(static_cast<bool>(in), "open blender_script.pie");
+        std::stringstream ss;
+        ss << in.rdbuf();
+        Program p = parseAll(ss.str());
+        for (const auto& e : p.errors)
+            std::cerr << "blender Line " << e.line << ": " << e.message << "\n";
+        if (!p.error.empty()) std::cerr << "blender first: " << p.error << " line " << p.errorLine << "\n";
+        check(p.errors.empty(), "parse blender voice script");
     }
 
     if (g_failed) {

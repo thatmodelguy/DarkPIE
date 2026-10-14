@@ -49,10 +49,15 @@ void Parser::synchronize() {
 }
 
 void Parser::fillProgram(Program& p) {
-    p.error = error_;
-    p.errorLine = errorLine_;
     p.errors = errors_;
-    if (p.errors.empty() && !error_.empty()) p.errors.push_back({errorLine_, error_});
+    if (!errors_.empty()) {
+        p.error = errors_[0].message;
+        p.errorLine = errors_[0].line;
+    } else {
+        p.error = error_;
+        p.errorLine = errorLine_;
+        if (!error_.empty()) p.errors.push_back({errorLine_, error_});
+    }
 }
 
 Program Parser::parse() {
@@ -76,6 +81,7 @@ Program Parser::parseAll() {
         auto s = statement();
         if (errors_.size() > before) {
             synchronize();
+            error_.clear();
             continue;
         }
         if (s) p.statements.push_back(std::move(s));
@@ -86,6 +92,17 @@ Program Parser::parseAll() {
 }
 
 StmtPtr Parser::statement() {
+    // GlovePIE ignores extra endif / end if / end at statement start.
+    if (match(TokenKind::EndIf)) return nullptr;
+    if (check(TokenKind::EndKw) && peek(1).kind != TokenKind::Equal &&
+        peek(1).kind != TokenKind::ColonEqual && peek(1).kind != TokenKind::PlusEqual &&
+        peek(1).kind != TokenKind::MinusEqual) {
+        consume();
+        match(TokenKind::If);
+        match(TokenKind::While);
+        match(TokenKind::For);
+        return nullptr;
+    }
     if (check(TokenKind::If)) return ifStatement();
     if (check(TokenKind::While)) return whileStatement();
     if (check(TokenKind::For)) return forStatement();

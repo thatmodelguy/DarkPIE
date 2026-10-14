@@ -2,11 +2,9 @@
 
 #include "lang/Value.h"
 
-#include <chrono>
 #include <mutex>
 #include <string>
 #include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
 struct ISpVoice;
@@ -37,6 +35,10 @@ public:
 
     bool said(const std::string& phrase, int confidence);
     void injectRecognition(const std::string& phrase, int sapiConfidence, bool partial);
+    // Script phrases only — lets tests exercise guessing without a microphone.
+    void setCommandsForTest(const std::vector<std::string>& phrases);
+    void hearForTest(const std::string& phrase, int confidence, bool hypothesis, unsigned long long utteranceId);
+    std::vector<std::string> takeProgress();
     void say(const std::string& text);
     void setSpeechText(const std::string& text);
 
@@ -69,6 +71,7 @@ private:
     ISpRecognizer* recognizer_ = nullptr;
     ISpRecoContext* context_ = nullptr;
     ISpRecoGrammar* grammar_ = nullptr;
+    ISpRecoGrammar* dictation_ = nullptr;
     bool comInit_ = false;
     bool ready_ = false;
     std::string status_ = "Speech idle";
@@ -76,13 +79,31 @@ private:
     mutable std::mutex mu_;
     std::unordered_map<std::string, int> pulses_;      // phrase -> max confidence this frame
     std::unordered_map<std::string, int> hypothese_;
-    std::unordered_map<std::string, std::chrono::steady_clock::time_point> lastPulseAt_;
-    std::unordered_set<std::string> knownPhrases_;
 
-    bool isKnownPhrase(const std::string& heard) const;
-    bool tryPulse(const std::string& phrase, int conf);
-    void ingestRecoText(const std::string& phrase, int conf, bool hypothesis);
-    void pulseMatches(const std::string& heard, int conf, bool strict);
+    struct CommandPhrase {
+        std::string display;
+        std::vector<std::string> words;
+    };
+    struct PendingPulse {
+        std::string phrase;
+        int conf = 0;
+    };
+    std::vector<CommandPhrase> commands_;
+    std::vector<PendingPulse> pendingPulses_;
+    std::vector<std::string> progress_;
+    // How many times each command has already fired inside the current utterance.
+    std::unordered_map<std::string, int> firedThisUtterance_;
+    unsigned long long utterancePos_ = 0;
+    bool expectNewUtterance_ = true;
+    bool utteranceClosed_ = false;
+
+    void rebuildCommands(const std::vector<std::string>& phrases);
+    bool extendsLonger(const CommandPhrase& cmd) const;
+    std::vector<std::string> matchCommands(const std::string& heard, bool hypothesis) const;
+    void beginResultUtterance(unsigned long long audioPos);
+    void queueMatches(const std::string& heard, int conf, bool hypothesis);
+    void emitPendingPulse();
+    void ingestRecoText(const std::string& phrase, int conf, bool hypothesis, unsigned long long audioPos);
     void applySleepWake();
     bool heardSleepCommandLocked() const;
     bool heardWakeCommandLocked() const;

@@ -136,9 +136,11 @@ void Engine::tick() {
         emit errorMessage(QString::fromStdString(warnings[warningCursor_]));
         ++warningCursor_;
     }
+    const auto progress = bus_.speech().takeProgress();
+    for (const auto& note : progress) emit debugMessage(QString::fromStdString(note));
     if (bus_.speech().lastRecognized != lastEmittedPhrase_) {
         lastEmittedPhrase_ = bus_.speech().lastRecognized;
-        if (!lastEmittedPhrase_.empty()) {
+        if (!lastEmittedPhrase_.empty() && progress.empty()) {
             const bool sleeping = bus_.speech().sleeping();
             const bool builtin = lastEmittedPhrase_ == "go to sleep" || lastEmittedPhrase_ == "wake up";
             if (sleeping && !builtin)

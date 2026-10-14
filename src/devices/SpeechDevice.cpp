@@ -173,6 +173,13 @@ std::vector<std::string> grammarForms(const std::string& phrase) {
     }
     return forms;
 }
+
+std::vector<std::string> canonWords(const std::string& phrase) {
+    std::string folded = foldPhrase(phrase);
+    auto words = splitWords(folded);
+    for (auto& w : words) w = spokenCanonical(w);
+    return words;
+}
 }
 
 SpeechDevice::SpeechDevice() = default;
@@ -314,9 +321,15 @@ bool SpeechDevice::start(const std::vector<std::string>& phrases, std::string& e
     }
 
     context_->SetNotifyWin32Event();
-    context_->SetMaxAlternates(8);
+    context_->SetMaxAlternates(3);
     recognizer_->SetPropertyNum(L"CFGConfidenceRejectionThreshold", 0);
-    ULONGLONG interest = SPFEI(SPEI_RECOGNITION) | SPFEI(SPEI_HYPOTHESIS) | SPFEI(SPEI_FALSE_RECOGNITION);
+    // Short trailing silence so a finished word can be followed by the next one.
+    // Set once, before the engine is running. Changing these live made commands lag.
+    recognizer_->SetPropertyNum(L"ComplexResponseSpeed", 10000);
+    recognizer_->SetPropertyNum(L"ResponseSpeed", 90);
+    recognizer_->SetPropertyNum(L"ComplexResponseSpeed", 200);
+    ULONGLONG interest = SPFEI(SPEI_RECOGNITION) | SPFEI(SPEI_HYPOTHESIS) | SPFEI(SPEI_PHRASE_START) |
+                         SPFEI(SPEI_SOUND_START) | SPFEI(SPEI_SOUND_END);
     context_->SetInterest(interest, interest);
 
     hr = context_->CreateGrammar(1, &grammar_);
@@ -327,7 +340,7 @@ bool SpeechDevice::start(const std::vector<std::string>& phrases, std::string& e
     }
 
     grammar_->ResetGrammar(MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US));
-    knownPhrases_.clear();
+    commands_.clear();
     asleep_ = false;
     wentToSleep_ = false;
     wokeUp_ = false;
@@ -337,6 +350,7 @@ bool SpeechDevice::start(const std::vector<std::string>& phrases, std::string& e
         listen.push_back("wake up");
         listen.push_back("wakeup");
     }
+    rebuildCommands(listen);
     ULONG ruleId = 1;
     auto addPhraseRule = [&](const std::string& form, float weight) -> HRESULT {
         if (form.empty()) return S_OK;
@@ -345,7 +359,15 @@ bool SpeechDevice::start(const std::vector<std::string>& phrases, std::string& e
         HRESULT r = grammar_->GetRule(name.c_str(), ruleId, SPRAF_TopLevel | SPRAF_Active, TRUE, &hRule);
         if (FAILED(r) || !hRule) return r;
         std::wstring w = utf8ToWide(form);
-        r = grammar_->AddWordTransition(hRule, nullptr, w.c_str(), L" ", SPWT_LEXICAL, weight, nullptr);
+        // The property is pushed as soon as this command is unambiguous, so a
+        // hypothesis can name it before trailing silence closes the utterance.
+        SPPROPERTYINFO prop{};
+        prop.pszName = L"cmd";
+        prop.ulId = ruleId;
+        prop.pszValue = w.c_str();
+        prop.vValue.vt = VT_EMPTY;
+        r = grammar_->AddWordTransition(hRule, nullptr, w.c_str(), L" ", SPWT_LEXICAL, weight, &prop);
+        if (FAILED(r)) r = grammar_->AddWordTransition(hRule, nullptr, w.c_str(), L" ", SPWT_LEXICAL, weight, nullptr);
         ++ruleId;
         return r;
     };
@@ -354,8 +376,6 @@ bool SpeechDevice::start(const std::vector<std::string>& phrases, std::string& e
     } else {
         for (const auto& p : listen) {
             std::string n = normalize(p);
-            knownPhrases_.insert(n);
-            knownPhrases_.insert(spokenCanonical(n));
             int words = 1;
             for (char c : n)
                 if (c == ' ') ++words;
@@ -379,8 +399,27 @@ bool SpeechDevice::start(const std::vector<std::string>& phrases, std::string& e
         return false;
     }
     grammar_->SetRuleState(nullptr, nullptr, SPRS_ACTIVE);
+
+    // Dictation hypotheses arrive word by word, before the command grammar
+    // waits for trailing silence. Guesses come from those words; the command
+    // grammar still supplies the accurate final result.
+    if (SUCCEEDED(context_->CreateGrammar(2, &dictation_)) && dictation_) {
+        if (FAILED(dictation_->LoadDictation(nullptr, SPLO_STATIC))) {
+            dictation_->Release();
+            dictation_ = nullptr;
+        } else {
+            dictation_->SetDictationState(SPRS_ACTIVE);
+        }
+    }
+
     context_->SetContextState(SPCS_ENABLED);
     recognizer_->SetRecoState(SPRST_ACTIVE_ALWAYS);
+    firedThisUtterance_.clear();
+    pendingPulses_.clear();
+    progress_.clear();
+    utterancePos_ = 0;
+    utteranceClosed_ = false;
+    expectNewUtterance_ = true;
 
     ready_ = true;
     if (listen.empty()) status_ = "Speech ready (no said() phrases)";
@@ -392,70 +431,159 @@ bool SpeechDevice::start(const std::vector<std::string>& phrases, std::string& e
     return true;
 }
 
-bool SpeechDevice::isKnownPhrase(const std::string& heard) const {
-    std::string raw = foldPhrase(normalize(heard));
-    std::string n = spokenCanonical(raw);
-    return knownPhrases_.count(n) > 0 || knownPhrases_.count(raw) > 0;
-}
-
-bool SpeechDevice::tryPulse(const std::string& phrase, int conf) {
-    auto canon = spokenCanonical(foldPhrase(phrase));
-    auto nowTs = std::chrono::steady_clock::now();
-    auto prev = lastPulseAt_.find(canon);
-    if (prev != lastPulseAt_.end() && (nowTs - prev->second) < std::chrono::milliseconds(1000))
-        return false;
-    pulses_[phrase] = conf;
-    lastPulseAt_[canon] = nowTs;
-    lastRecognized = phrase;
-    completePhrase = phrase;
-    return true;
-}
-
-void SpeechDevice::pulseMatches(const std::string& heard, int conf, bool strict) {
-    std::vector<std::string> hits;
-    const std::string folded = foldPhrase(normalize(heard));
-    for (const auto& known : knownPhrases_) {
-        const std::string kf = foldPhrase(known);
-        if (strict) {
-            if (folded != kf) continue;
-        } else if (!phraseContains(heard, known)) {
-            continue;
-        }
-        hits.push_back(kf);
-    }
-    std::sort(hits.begin(), hits.end());
-    hits.erase(std::unique(hits.begin(), hits.end()), hits.end());
-    std::sort(hits.begin(), hits.end(), [](const std::string& a, const std::string& b) { return a.size() > b.size(); });
-    std::vector<std::string> kept;
-    for (const auto& h : hits) {
-        bool swallowed = false;
-        for (const auto& k : kept) {
-            if (k != h && phraseContains(k, h) && k.size() > h.size()) {
-                swallowed = true;
+void SpeechDevice::rebuildCommands(const std::vector<std::string>& phrases) {
+    commands_.clear();
+    for (const auto& p : phrases) {
+        std::string display = normalize(p);
+        if (display.empty()) continue;
+        CommandPhrase cmd;
+        cmd.display = display;
+        cmd.words = canonWords(display);
+        if (cmd.words.empty()) continue;
+        bool dup = false;
+        for (const auto& existing : commands_) {
+            if (existing.words == cmd.words) {
+                dup = true;
                 break;
             }
         }
-        if (!swallowed) kept.push_back(h);
+        if (!dup) commands_.push_back(std::move(cmd));
     }
-    for (const auto& h : kept) tryPulse(h, conf);
 }
 
-void SpeechDevice::ingestRecoText(const std::string& phrase, int conf, bool hypothesis) {
+bool SpeechDevice::extendsLonger(const CommandPhrase& cmd) const {
+    for (const auto& other : commands_) {
+        if (other.words.size() <= cmd.words.size()) continue;
+        bool prefix = true;
+        for (size_t i = 0; i < cmd.words.size(); ++i) {
+            if (other.words[i] != cmd.words[i]) {
+                prefix = false;
+                break;
+            }
+        }
+        if (prefix) return true;
+    }
+    return false;
+}
+
+std::vector<std::string> SpeechDevice::matchCommands(const std::string& heard, bool hypothesis) const {
+    auto words = canonWords(normalize(heard));
+    std::vector<std::string> out;
+    size_t i = 0;
+    while (i < words.size()) {
+        const CommandPhrase* best = nullptr;
+        for (const auto& cmd : commands_) {
+            if (cmd.words.size() > words.size() - i) continue;
+            bool eq = true;
+            for (size_t j = 0; j < cmd.words.size(); ++j) {
+                if (words[i + j] != cmd.words[j]) {
+                    eq = false;
+                    break;
+                }
+            }
+            if (!eq) continue;
+            if (!best || cmd.words.size() > best->words.size()) best = &cmd;
+        }
+        if (!best) {
+            // A guess has to be commands only. "use the flashlight" still
+            // guesses "use", and does not also fire flashlight from the filler.
+            if (hypothesis) break;
+            ++i;
+            continue;
+        }
+        const bool atEnd = i + best->words.size() == words.size();
+        // "go" while the script also has "go up" stays a guess until more
+        // words arrive or the utterance closes. "use" with nothing longer fires now.
+        if (hypothesis && atEnd && extendsLonger(*best)) break;
+        out.push_back(best->display);
+        i += best->words.size();
+    }
+    return out;
+}
+
+void SpeechDevice::beginResultUtterance(unsigned long long audioPos) {
+    const bool sameAudio = audioPos != 0 && audioPos == utterancePos_;
+    const bool boundary = utteranceClosed_ || expectNewUtterance_ || (audioPos != 0 && audioPos != utterancePos_);
+    if (!sameAudio && boundary) {
+        firedThisUtterance_.clear();
+        expectNewUtterance_ = false;
+        utteranceClosed_ = false;
+    }
+    if (audioPos != 0) utterancePos_ = audioPos;
+}
+
+void SpeechDevice::queueMatches(const std::string& heard, int conf, bool hypothesis) {
+    auto matched = matchCommands(heard, hypothesis);
+    std::unordered_map<std::string, int> counts;
+    std::vector<std::string> order;
+    for (const auto& m : matched) {
+        if (!counts.count(m)) order.push_back(m);
+        counts[m]++;
+    }
+    if (!hypothesis) {
+        for (const auto& m : order) {
+            int prev = 0;
+            auto it = firedThisUtterance_.find(m);
+            if (it != firedThisUtterance_.end()) prev = it->second;
+            if (counts[m] <= prev && prev > 0)
+                progress_.push_back("Recognised, already guessed \"" + m + "\"");
+        }
+    }
+    for (const auto& m : order) {
+        int prev = 0;
+        auto it = firedThisUtterance_.find(m);
+        if (it != firedThisUtterance_.end()) prev = it->second;
+        int n = counts[m];
+        if (n <= prev) continue;
+        firedThisUtterance_[m] = n;
+        for (int extra = prev; extra < n; ++extra) {
+            pendingPulses_.push_back(PendingPulse{m, conf});
+            progress_.push_back(hypothesis ? ("Guess: \"" + m + "\"") : ("Recognised \"" + m + "\""));
+        }
+    }
+}
+
+void SpeechDevice::emitPendingPulse() {
+    if (pendingPulses_.empty()) return;
+    PendingPulse p = pendingPulses_.front();
+    pendingPulses_.erase(pendingPulses_.begin());
+    pulses_[p.phrase] = p.conf;
+    lastRecognized = p.phrase;
+    completePhrase = p.phrase;
+    partialPhrase = p.phrase;
+}
+
+void SpeechDevice::ingestRecoText(const std::string& phrase, int conf, bool hypothesis, unsigned long long audioPos) {
+    if (phrase.empty()) {
+        if (!hypothesis) utteranceClosed_ = true;
+        return;
+    }
+    beginResultUtterance(audioPos);
     if (hypothesis) {
         partialPhrase = phrase;
         hypothese_[phrase] = conf;
-        pulseMatches(phrase, conf, true);
-        return;
+    } else {
+        completePhrase = phrase;
+        inPhrase = false;
     }
-    completePhrase = phrase;
-    pulseMatches(phrase, conf, false);
-    if (isKnownPhrase(phrase)) tryPulse(phrase, conf);
+    queueMatches(phrase, conf, hypothesis);
+    if (!hypothesis) utteranceClosed_ = true;
 }
 
 void SpeechDevice::stop() {
     ready_ = false;
-    knownPhrases_.clear();
+    commands_.clear();
+    pendingPulses_.clear();
+    progress_.clear();
+    firedThisUtterance_.clear();
+    utterancePos_ = 0;
+    utteranceClosed_ = false;
+    expectNewUtterance_ = true;
     if (recognizer_) recognizer_->SetRecoState(SPRST_INACTIVE);
+    if (dictation_) {
+        dictation_->Release();
+        dictation_ = nullptr;
+    }
     if (grammar_) {
         grammar_->Release();
         grammar_ = nullptr;
@@ -488,49 +616,78 @@ void SpeechDevice::poll() {
     hypothese_.clear();
     completePhrase.clear();
     partialPhrase.clear();
-    if (!ready_ || !context_ || !microphoneEnabled) return;
-
-    SPEVENT event{};
-    ULONG fetched = 0;
-    bool sawFinal = false;
-    while (context_->GetEvents(1, &event, &fetched) == S_OK && fetched == 1) {
-        const bool hypothesis = event.eEventId == SPEI_HYPOTHESIS || event.eEventId == SPEI_FALSE_RECOGNITION;
-        const bool accepted = event.eEventId == SPEI_RECOGNITION;
-        if ((hypothesis || accepted) && event.lParam) {
-            auto* result = reinterpret_cast<ISpRecoResult*>(event.lParam);
-            auto takeText = [&](ISpPhrase* phraseObj) {
-                if (!phraseObj) return;
+    if (ready_ && context_ && microphoneEnabled) {
+        SPEVENT event{};
+        ULONG fetched = 0;
+        while (context_->GetEvents(1, &event, &fetched) == S_OK && fetched == 1) {
+            if (event.eEventId == SPEI_SOUND_START) {
+                inSound = true;
+                expectNewUtterance_ = true;
+                continue;
+            }
+            if (event.eEventId == SPEI_SOUND_END) {
+                inSound = false;
+                continue;
+            }
+            if (event.eEventId == SPEI_PHRASE_START) {
+                inPhrase = true;
+                expectNewUtterance_ = true;
+                continue;
+            }
+            const bool hypothesis = event.eEventId == SPEI_HYPOTHESIS;
+            const bool accepted = event.eEventId == SPEI_RECOGNITION;
+            if ((hypothesis || accepted) && event.lParam) {
+                auto* result = reinterpret_cast<ISpRecoResult*>(event.lParam);
                 wchar_t* text = nullptr;
-                if (SUCCEEDED(phraseObj->GetText(SP_GETWHOLEPHRASE, SP_GETWHOLEPHRASE, TRUE, &text, nullptr)) && text) {
+                unsigned long long audioPos = 0;
+                int conf = SP_NORMAL_CONFIDENCE;
+                SPPHRASE* spPhrase = nullptr;
+                if (SUCCEEDED(result->GetPhrase(&spPhrase)) && spPhrase) {
+                    conf = static_cast<int>(spPhrase->Rule.Confidence);
+                    audioPos = spPhrase->ftStartTime != 0 ? spPhrase->ftStartTime : spPhrase->ullAudioStreamPosition;
+                    CoTaskMemFree(spPhrase);
+                }
+                if (SUCCEEDED(result->GetText(SP_GETWHOLEPHRASE, SP_GETWHOLEPHRASE, TRUE, &text, nullptr)) && text) {
                     std::string phrase = normalize(wideToUtf8(text));
                     CoTaskMemFree(text);
-                    SPPHRASE* spPhrase = nullptr;
-                    int conf = SP_NORMAL_CONFIDENCE;
-                    if (SUCCEEDED(phraseObj->GetPhrase(&spPhrase)) && spPhrase) {
-                        conf = static_cast<int>(spPhrase->Rule.Confidence);
-                        CoTaskMemFree(spPhrase);
-                    }
-                    ingestRecoText(phrase, conf, hypothesis);
+                    ingestRecoText(phrase, conf, hypothesis, audioPos);
+                } else if (accepted) {
+                    utteranceClosed_ = true;
+                    inPhrase = false;
                 }
-            };
-            takeText(result);
-            ISpPhraseAlt* alts[8]{};
-            ULONG got = 0;
-            if (SUCCEEDED(result->GetAlternates(0, static_cast<ULONG>(-1), 8, alts, &got))) {
-                for (ULONG i = 0; i < got; ++i) {
-                    takeText(alts[i]);
-                    if (alts[i]) alts[i]->Release();
-                }
+                result->Release();
             }
-            result->Release();
-            if (accepted) sawFinal = true;
         }
+        // A recognition pauses the context until Resume. Restarting the
+        // recognizer here used to drop the start of the next word.
+        context_->Resume(0);
     }
-    if (sawFinal && recognizer_) {
-        recognizer_->SetRecoState(SPRST_INACTIVE);
-        recognizer_->SetRecoState(SPRST_ACTIVE_ALWAYS);
-    }
+    emitPendingPulse();
     applySleepWake();
+}
+
+void SpeechDevice::setCommandsForTest(const std::vector<std::string>& phrases) {
+    std::lock_guard lock(mu_);
+    rebuildCommands(phrases);
+    pendingPulses_.clear();
+    progress_.clear();
+    firedThisUtterance_.clear();
+    utterancePos_ = 0;
+    utteranceClosed_ = false;
+    expectNewUtterance_ = true;
+}
+
+void SpeechDevice::hearForTest(const std::string& phrase, int confidence, bool hypothesis, unsigned long long utteranceId) {
+    std::lock_guard lock(mu_);
+    ingestRecoText(normalize(phrase), confidence, hypothesis, utteranceId);
+    emitPendingPulse();
+}
+
+std::vector<std::string> SpeechDevice::takeProgress() {
+    std::lock_guard lock(mu_);
+    std::vector<std::string> out;
+    out.swap(progress_);
+    return out;
 }
 
 void SpeechDevice::injectRecognition(const std::string& phrase, int sapiConfidence, bool partial) {

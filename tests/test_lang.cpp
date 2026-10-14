@@ -465,6 +465,47 @@ int main() {
         check(bus.speech().said("go backward", 2), "backwards matches backward");
     }
     {
+        DeviceBus bus;
+        bus.dryRun = true;
+        bus.speech().setCommandsForTest({"use", "go", "go up"});
+        bus.speech().hearForTest("use", 0, true, 10);
+        check(bus.speech().said("use", 1), "guess fires use before the utterance closes");
+        auto notes = bus.speech().takeProgress();
+        bool sawGuess = false;
+        for (const auto& n : notes)
+            if (n.find("Guess:") != std::string::npos && n.find("use") != std::string::npos) sawGuess = true;
+        check(sawGuess, "guess progress names use");
+
+        bus.beginFrame();
+        bus.speech().hearForTest("use", 1, false, 10);
+        check(!bus.speech().said("use", 1), "final recognition does not fire the guess again");
+        notes = bus.speech().takeProgress();
+        bool already = false;
+        for (const auto& n : notes)
+            if (n.find("already guessed") != std::string::npos) already = true;
+        check(already, "final result is marked already guessed");
+
+        bus.beginFrame();
+        bus.speech().hearForTest("use", 0, true, 20);
+        check(bus.speech().said("use", 1), "the next use fires without a one second wait");
+
+        bus.beginFrame();
+        bus.speech().hearForTest("go", 0, true, 30);
+        check(!bus.speech().said("go", 1), "go waits while go up is still possible");
+        bus.speech().hearForTest("go up", 0, true, 30);
+        check(bus.speech().said("go up", 1), "go up guesses once the rest is heard");
+
+        bus.beginFrame();
+        bus.speech().hearForTest("go", 1, false, 40);
+        check(bus.speech().said("go", 1), "final go fires when it was not a longer command");
+
+        bus.beginFrame();
+        bus.speech().hearForTest("use use", 0, true, 50);
+        check(bus.speech().said("use", 1), "first use in a repeated phrase fires");
+        bus.beginFrame();
+        check(bus.speech().said("use", 1), "second use fires on the next frame");
+    }
+    {
         std::ifstream in("scripts/examples/voice_game.pie");
         if (!in) in.open("../../scripts/examples/voice_game.pie");
         if (!in) in.open("../scripts/examples/voice_game.pie");

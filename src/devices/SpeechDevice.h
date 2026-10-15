@@ -71,7 +71,6 @@ private:
     ISpRecognizer* recognizer_ = nullptr;
     ISpRecoContext* context_ = nullptr;
     ISpRecoGrammar* grammar_ = nullptr;
-    ISpRecoGrammar* dictation_ = nullptr;
     bool comInit_ = false;
     bool ready_ = false;
     std::string status_ = "Speech idle";

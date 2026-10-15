@@ -400,18 +400,6 @@ bool SpeechDevice::start(const std::vector<std::string>& phrases, std::string& e
     }
     grammar_->SetRuleState(nullptr, nullptr, SPRS_ACTIVE);
 
-    // Dictation hypotheses arrive word by word, before the command grammar
-    // waits for trailing silence. Guesses come from those words; the command
-    // grammar still supplies the accurate final result.
-    if (SUCCEEDED(context_->CreateGrammar(2, &dictation_)) && dictation_) {
-        if (FAILED(dictation_->LoadDictation(nullptr, SPLO_STATIC))) {
-            dictation_->Release();
-            dictation_ = nullptr;
-        } else {
-            dictation_->SetDictationState(SPRS_ACTIVE);
-        }
-    }
-
     context_->SetContextState(SPCS_ENABLED);
     recognizer_->SetRecoState(SPRST_ACTIVE_ALWAYS);
     firedThisUtterance_.clear();
@@ -580,10 +568,6 @@ void SpeechDevice::stop() {
     utteranceClosed_ = false;
     expectNewUtterance_ = true;
     if (recognizer_) recognizer_->SetRecoState(SPRST_INACTIVE);
-    if (dictation_) {
-        dictation_->Release();
-        dictation_ = nullptr;
-    }
     if (grammar_) {
         grammar_->Release();
         grammar_ = nullptr;

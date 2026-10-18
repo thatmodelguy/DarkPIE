@@ -29,13 +29,7 @@ public:
     void setMicrophoneId(std::string id);
     const std::string& microphoneId() const { return microphoneId_; }
 
-    // While a script is listening, the selected microphone's Windows volume is
-    // set to this percent and the previous level is restored when listening stops.
-    void setCaptureVolumePercent(int percent);
-    int captureVolumePercent() const { return capturePercent_; }
-    bool captureVolumeHeld() const { return volumeHeld_; }
-    const std::string& captureVolumeEndpoint() const { return volumeEndpoint_; }
-    float captureVolumeOriginal() const { return volumeOriginal_; }
+    // One-time undo if an older build left the Windows microphone level changed.
     static bool forceEndpointVolume(const std::string& endpointId, float scalar);
 
     bool start(const std::vector<std::string>& phrases, std::string& error);
@@ -78,14 +72,6 @@ private:
     bool confidenceOk(int required, int sapiConfidence, bool partial) const;
 
     std::string microphoneId_;
-    std::wstring activeTokenId_;
-    int capturePercent_ = 100;
-    bool volumeHeld_ = false;
-    std::string volumeEndpoint_;
-    float volumeOriginal_ = 1.f;
-
-    void applyCaptureVolume();
-    void restoreCaptureVolume();
 
     ISpVoice* voice_ = nullptr;
     ISpRecognizer* recognizer_ = nullptr;
@@ -97,6 +83,7 @@ private:
     std::string lastSpeechText_;
     mutable std::mutex mu_;
     std::unordered_map<std::string, int> pulses_;      // phrase -> max confidence this frame
+    std::unordered_map<std::string, int> finals_;      // finished results, including ones already guessed
     std::unordered_map<std::string, int> hypothese_;
 
     struct CommandPhrase {
@@ -117,7 +104,6 @@ private:
     bool utteranceClosed_ = false;
 
     void rebuildCommands(const std::vector<std::string>& phrases);
-    bool extendsLonger(const CommandPhrase& cmd) const;
     std::vector<std::string> matchCommands(const std::string& heard, bool hypothesis) const;
     void beginResultUtterance(unsigned long long audioPos);
     void queueMatches(const std::string& heard, int conf, bool hypothesis);

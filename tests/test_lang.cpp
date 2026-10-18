@@ -501,9 +501,17 @@ int main() {
 
         bus.beginFrame();
         bus.speech().hearForTest("go", 0, true, 30);
-        check(!bus.speech().said("go", 1), "go waits while go up is still possible");
+        check(bus.speech().said("go", 1), "go fires as soon as it is heard");
+        check(!bus.speech().said("go", 5), "complete-phrase confidence waits for the finished result");
         bus.speech().hearForTest("go up", 0, true, 30);
         check(bus.speech().said("go up", 1), "go up guesses once the rest is heard");
+
+        bus.beginFrame();
+        bus.speech().hearForTest("go", 0, true, 35);
+        bus.beginFrame();
+        bus.speech().hearForTest("go", 1, false, 35);
+        check(!bus.speech().said("go", 1), "finished result does not press a guessed word again");
+        check(bus.speech().said("go", 5), "finished result satisfies complete-phrase confidence");
 
         bus.beginFrame();
         bus.speech().hearForTest("go", 1, false, 40);

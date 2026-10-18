@@ -277,6 +277,36 @@ bool adjustCapture(const std::wstring& tokenOrEndpoint, float scalar, float* pre
     en->Release();
     return ok;
 }
+
+// SAPI's capture buffer defaults to 500 ms, and 200 ms is the smallest capacity
+// it will accept. The notify size is the piece of audio the engine actually
+// reads, so a guess can start after about 20 ms instead of waiting out the buffer.
+void tightenCaptureBuffer(ISpRecognizer* recognizer) {
+    if (!recognizer) return;
+    ISpStreamFormat* stream = nullptr;
+    if (FAILED(recognizer->GetInputStream(&stream)) || !stream) return;
+    ISpAudio* audio = nullptr;
+    if (SUCCEEDED(stream->QueryInterface(IID_ISpAudio, reinterpret_cast<void**>(&audio))) && audio) {
+        SPAUDIOBUFFERINFO info{};
+        info.ulMsMinNotification = 20;
+        info.ulMsBufferSize = 200;
+        info.ulMsEventBias = 0;
+        audio->SetBufferInfo(&info);
+
+        ULONG notify = 640;
+        GUID formatId{};
+        WAVEFORMATEX* format = nullptr;
+        if (SUCCEEDED(stream->GetFormat(&formatId, &format)) && format && format->nAvgBytesPerSec > 0) {
+            notify = format->nAvgBytesPerSec / 50;
+            if (format->nBlockAlign > 1) notify -= notify % format->nBlockAlign;
+            if (notify < format->nBlockAlign) notify = format->nBlockAlign;
+            CoTaskMemFree(format);
+        }
+        audio->SetBufferNotifySize(notify);
+        audio->Release();
+    }
+    stream->Release();
+}
 }
 
 SpeechDevice::SpeechDevice() = default;
@@ -397,18 +427,9 @@ bool SpeechDevice::start(const std::vector<std::string>& phrases, std::string& e
     if (!microphoneId_.empty()) audioToken = tokenFromId(utf8ToWide(microphoneId_));
     if (!audioToken) audioToken = defaultToken(SPCAT_AUDIOIN);
     if (audioToken) {
-        LPWSTR rawId = nullptr;
-        if (SUCCEEDED(audioToken->GetId(&rawId)) && rawId) {
-            activeTokenId_.assign(rawId);
-            CoTaskMemFree(rawId);
-        }
-        // Set the Windows level before the recognizer opens the microphone.
-        // Changing it afterward restarts the capture stream and delays every command.
-        applyCaptureVolume();
         hr = recognizer_->SetInput(audioToken, TRUE);
         audioToken->Release();
         if (FAILED(hr)) {
-            restoreCaptureVolume();
             error = "Could not open the selected microphone.";
             status_ = error;
             return false;
@@ -428,13 +449,17 @@ bool SpeechDevice::start(const std::vector<std::string>& phrases, std::string& e
 
     // Win32 event, not a window message, so a guess can wake the script immediately.
     context_->SetNotifyWin32Event();
-    context_->SetMaxAlternates(3);
+    // One alternate. Extra alternates make the engine finish scoring before it will guess.
+    context_->SetMaxAlternates(1);
     recognizer_->SetPropertyNum(L"CFGConfidenceRejectionThreshold", 0);
-    // Short trailing silence so a finished word can be followed by the next one.
-    // Set once, before the engine is running. Changing these live made commands lag.
+    // Trailing silence after a finished word. This engine will not keep a
+    // value below 50 ms, or below 100 ms when the word could still be extended.
+    // A long word finishes during the word, so it never shows this pause.
+    // Set once, before the engine is running.
     recognizer_->SetPropertyNum(L"ComplexResponseSpeed", 10000);
-    recognizer_->SetPropertyNum(L"ResponseSpeed", 90);
-    recognizer_->SetPropertyNum(L"ComplexResponseSpeed", 200);
+    recognizer_->SetPropertyNum(L"ResponseSpeed", 50);
+    recognizer_->SetPropertyNum(L"ComplexResponseSpeed", 100);
+    tightenCaptureBuffer(recognizer_);
     ULONGLONG interest = SPFEI(SPEI_RECOGNITION) | SPFEI(SPEI_HYPOTHESIS) | SPFEI(SPEI_PHRASE_START) |
                          SPFEI(SPEI_SOUND_START) | SPFEI(SPEI_SOUND_END);
     context_->SetInterest(interest, interest);
@@ -458,28 +483,31 @@ bool SpeechDevice::start(const std::vector<std::string>& phrases, std::string& e
         listen.push_back("wakeup");
     }
     rebuildCommands(listen);
-    ULONG ruleId = 1;
-    auto addPhraseRule = [&](const std::string& form, float weight) -> HRESULT {
-        if (form.empty()) return S_OK;
-        std::wstring name = L"cmd" + std::to_wstring(ruleId);
-        SPSTATEHANDLE hRule = nullptr;
-        HRESULT r = grammar_->GetRule(name.c_str(), ruleId, SPRAF_TopLevel | SPRAF_Active, TRUE, &hRule);
-        if (FAILED(r) || !hRule) return r;
+    // Every command is an alternative of one rule. The top rule repeats that
+    // rule, so "use use use" is three commands in one breath instead of one
+    // command that waits until the speaking stops.
+    SPSTATEHANDLE hItem = nullptr;
+    hr = grammar_->GetRule(L"item", 1, 0, TRUE, &hItem);
+    ULONG propId = 1;
+    auto addPhrase = [&](const std::string& form, float weight) -> HRESULT {
+        if (form.empty() || !hItem) return S_OK;
         std::wstring w = utf8ToWide(form);
-        // The property is pushed as soon as this command is unambiguous, so a
-        // hypothesis can name it before trailing silence closes the utterance.
         SPPROPERTYINFO prop{};
         prop.pszName = L"cmd";
-        prop.ulId = ruleId;
+        prop.ulId = propId++;
         prop.pszValue = w.c_str();
         prop.vValue.vt = VT_EMPTY;
-        r = grammar_->AddWordTransition(hRule, nullptr, w.c_str(), L" ", SPWT_LEXICAL, weight, &prop);
-        if (FAILED(r)) r = grammar_->AddWordTransition(hRule, nullptr, w.c_str(), L" ", SPWT_LEXICAL, weight, nullptr);
-        ++ruleId;
+        HRESULT r = grammar_->AddWordTransition(hItem, nullptr, w.c_str(), L" ", SPWT_LEXICAL, weight, &prop);
+        if (FAILED(r)) r = grammar_->AddWordTransition(hItem, nullptr, w.c_str(), L" ", SPWT_LEXICAL, weight, nullptr);
         return r;
     };
+    if (FAILED(hr)) {
+        error = "Could not build speech command grammar.";
+        status_ = error;
+        return false;
+    }
     if (listen.empty()) {
-        hr = addPhraseRule("darkpie idle", 1.0f);
+        hr = addPhrase("darkpie idle", 1.0f);
     } else {
         for (const auto& p : listen) {
             std::string n = normalize(p);
@@ -488,11 +516,21 @@ bool SpeechDevice::start(const std::vector<std::string>& phrases, std::string& e
                 if (c == ' ') ++words;
             const float weight = (words <= 1) ? 50.0f : 1.0f;
             for (const auto& form : grammarForms(p)) {
-                hr = addPhraseRule(form, weight);
+                hr = addPhrase(form, weight);
                 if (FAILED(hr)) break;
             }
             if (FAILED(hr)) break;
         }
+    }
+    if (SUCCEEDED(hr)) {
+        SPSTATEHANDLE hTop = nullptr;
+        hr = grammar_->GetRule(L"run", 2, SPRAF_TopLevel | SPRAF_Active, TRUE, &hTop);
+        SPSTATEHANDLE hMore = nullptr;
+        if (SUCCEEDED(hr)) hr = grammar_->CreateNewState(hTop, &hMore);
+        if (SUCCEEDED(hr)) hr = grammar_->AddRuleTransition(hTop, hMore, hItem, 1.0f, nullptr);
+        if (SUCCEEDED(hr)) hr = grammar_->AddRuleTransition(hMore, hMore, hItem, 1.0f, nullptr);
+        if (SUCCEEDED(hr))
+            hr = grammar_->AddWordTransition(hMore, nullptr, nullptr, nullptr, SPWT_LEXICAL, 1.0f, nullptr);
     }
     if (FAILED(hr)) {
         error = "Could not build speech command grammar.";
@@ -526,33 +564,9 @@ bool SpeechDevice::start(const std::vector<std::string>& phrases, std::string& e
     return true;
 }
 
-void SpeechDevice::setCaptureVolumePercent(int percent) {
-    if (percent < 0) percent = 0;
-    if (percent > 100) percent = 100;
-    capturePercent_ = percent;
-}
-
 bool SpeechDevice::forceEndpointVolume(const std::string& endpointId, float scalar) {
     if (endpointId.empty()) return false;
     return adjustCapture(utf8ToWide(endpointId), scalar, nullptr, nullptr);
-}
-
-void SpeechDevice::applyCaptureVolume() {
-    const float level = std::clamp(capturePercent_, 0, 100) / 100.f;
-    if (volumeHeld_) return;
-    float previous = 1.f;
-    std::string endpoint;
-    if (!adjustCapture(activeTokenId_, level, &previous, &endpoint) || endpoint.empty()) return;
-    volumeHeld_ = true;
-    volumeOriginal_ = previous;
-    volumeEndpoint_ = std::move(endpoint);
-}
-
-void SpeechDevice::restoreCaptureVolume() {
-    if (!volumeHeld_) return;
-    adjustCapture(utf8ToWide(volumeEndpoint_), volumeOriginal_, nullptr, nullptr);
-    volumeHeld_ = false;
-    volumeEndpoint_.clear();
 }
 
 void SpeechDevice::rebuildCommands(const std::vector<std::string>& phrases) {
@@ -573,21 +587,6 @@ void SpeechDevice::rebuildCommands(const std::vector<std::string>& phrases) {
         }
         if (!dup) commands_.push_back(std::move(cmd));
     }
-}
-
-bool SpeechDevice::extendsLonger(const CommandPhrase& cmd) const {
-    for (const auto& other : commands_) {
-        if (other.words.size() <= cmd.words.size()) continue;
-        bool prefix = true;
-        for (size_t i = 0; i < cmd.words.size(); ++i) {
-            if (other.words[i] != cmd.words[i]) {
-                prefix = false;
-                break;
-            }
-        }
-        if (prefix) return true;
-    }
-    return false;
 }
 
 std::vector<std::string> SpeechDevice::matchCommands(const std::string& heard, bool hypothesis) const {
@@ -615,10 +614,9 @@ std::vector<std::string> SpeechDevice::matchCommands(const std::string& heard, b
             ++i;
             continue;
         }
-        const bool atEnd = i + best->words.size() == words.size();
-        // "go" while the script also has "go up" stays a guess until more
-        // words arrive or the utterance closes. "use" with nothing longer fires now.
-        if (hypothesis && atEnd && extendsLonger(*best)) break;
+        // GlovePIE's default confidence fires the word as soon as it is heard,
+        // even when a longer command is still possible. Confidence 4 and above
+        // waits for the finished result instead.
         out.push_back(best->display);
         i += best->words.size();
     }
@@ -646,6 +644,7 @@ void SpeechDevice::queueMatches(const std::string& heard, int conf, bool hypothe
     }
     if (!hypothesis) {
         for (const auto& m : order) {
+            finals_[m] = conf;
             int prev = 0;
             auto it = firedThisUtterance_.find(m);
             if (it != firedThisUtterance_.end()) prev = it->second;
@@ -724,9 +723,6 @@ void SpeechDevice::stop() {
         CoUninitialize();
         comInit_ = false;
     }
-    // The recognizer has released the microphone, so restoring the Windows
-    // volume cannot restart the capture stream underneath it.
-    restoreCaptureVolume();
     status_ = "Speech idle";
     asleep_ = false;
     wentToSleep_ = false;
@@ -742,6 +738,7 @@ void* SpeechDevice::notifyEvent() const {
 void SpeechDevice::poll() {
     std::lock_guard lock(mu_);
     pulses_.clear();
+    finals_.clear();
     hypothese_.clear();
     completePhrase.clear();
     partialPhrase.clear();
@@ -922,6 +919,9 @@ bool SpeechDevice::said(const std::string& phrase, int confidence) {
         }
         return false;
     };
+    // Confidence 4 and above is GlovePIE's "wait until the phrase is finished".
+    // Lower confidence fires on the guess, as soon as the word has been heard.
+    if (required >= 4) return match(finals_, false);
     if (match(pulses_, false)) return true;
     return false;
 }

@@ -97,7 +97,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     micSlider->setRange(0, 100);
     micSlider->setFixedWidth(140);
     micSlider->setToolTip(QStringLiteral(
-        "Microphone volume while a script is running. Windows puts the previous volume back when the script stops."));
+        "Microphone volume used while a script is running. It is applied when you press Run, and Windows puts the previous volume back when the script stops."));
     micLay->addWidget(micLabel);
     micLay->addWidget(micSlider);
     barGrid->addWidget(micVol, 0, 0, Qt::AlignLeft);

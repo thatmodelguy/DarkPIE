@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cwctype>
 #include <sstream>
 
@@ -240,8 +241,15 @@ bool setDeviceScalar(IMMDevice* dev, float scalar, float* previous) {
     IAudioEndpointVolume* vol = nullptr;
     HRESULT hr = dev->Activate(__uuidof(IAudioEndpointVolume), CLSCTX_ALL, nullptr, reinterpret_cast<void**>(&vol));
     if (FAILED(hr) || !vol) return false;
-    if (previous && FAILED(vol->GetMasterVolumeLevelScalar(previous))) *previous = 1.f;
+    float current = 1.f;
+    if (FAILED(vol->GetMasterVolumeLevelScalar(&current))) current = 1.f;
+    if (previous) *previous = current;
     scalar = std::clamp(scalar, 0.f, 1.f);
+    // Writing the same level still restarts the capture graph on some devices.
+    if (std::fabs(current - scalar) < 0.004f) {
+        vol->Release();
+        return true;
+    }
     hr = vol->SetMasterVolumeLevelScalar(scalar, nullptr);
     vol->Release();
     return SUCCEEDED(hr);
@@ -394,9 +402,13 @@ bool SpeechDevice::start(const std::vector<std::string>& phrases, std::string& e
             activeTokenId_.assign(rawId);
             CoTaskMemFree(rawId);
         }
+        // Set the Windows level before the recognizer opens the microphone.
+        // Changing it afterward restarts the capture stream and delays every command.
+        applyCaptureVolume();
         hr = recognizer_->SetInput(audioToken, TRUE);
         audioToken->Release();
         if (FAILED(hr)) {
+            restoreCaptureVolume();
             error = "Could not open the selected microphone.";
             status_ = error;
             return false;
@@ -511,7 +523,6 @@ bool SpeechDevice::start(const std::vector<std::string>& phrases, std::string& e
                   " script commands + sleep/wake";
     else
         status_ = "Listening for " + std::to_string(phrases.size()) + " script commands";
-    applyCaptureVolume();
     return true;
 }
 
@@ -519,8 +530,6 @@ void SpeechDevice::setCaptureVolumePercent(int percent) {
     if (percent < 0) percent = 0;
     if (percent > 100) percent = 100;
     capturePercent_ = percent;
-    if (!volumeHeld_) return;
-    adjustCapture(utf8ToWide(volumeEndpoint_), capturePercent_ / 100.f, nullptr, nullptr);
 }
 
 bool SpeechDevice::forceEndpointVolume(const std::string& endpointId, float scalar) {
@@ -530,10 +539,7 @@ bool SpeechDevice::forceEndpointVolume(const std::string& endpointId, float scal
 
 void SpeechDevice::applyCaptureVolume() {
     const float level = std::clamp(capturePercent_, 0, 100) / 100.f;
-    if (volumeHeld_) {
-        adjustCapture(utf8ToWide(volumeEndpoint_), level, nullptr, nullptr);
-        return;
-    }
+    if (volumeHeld_) return;
     float previous = 1.f;
     std::string endpoint;
     if (!adjustCapture(activeTokenId_, level, &previous, &endpoint) || endpoint.empty()) return;
@@ -689,7 +695,6 @@ void SpeechDevice::ingestRecoText(const std::string& phrase, int conf, bool hypo
 }
 
 void SpeechDevice::stop() {
-    restoreCaptureVolume();
     ready_ = false;
     commands_.clear();
     pendingPulses_.clear();
@@ -719,6 +724,9 @@ void SpeechDevice::stop() {
         CoUninitialize();
         comInit_ = false;
     }
+    // The recognizer has released the microphone, so restoring the Windows
+    // volume cannot restart the capture stream underneath it.
+    restoreCaptureVolume();
     status_ = "Speech idle";
     asleep_ = false;
     wentToSleep_ = false;

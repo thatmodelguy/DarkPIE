@@ -61,6 +61,8 @@ private:
     void rebuildRecentMenu();
     QStringList loadRecent() const;
     void saveRecent(const QStringList& files) const;
+    QString scriptDialogDirectory() const;
+    void noteScriptDirectory(const QString& filePath);
 
     QTabWidget* tabs_ = nullptr;
     QPlainTextEdit* debug_ = nullptr;

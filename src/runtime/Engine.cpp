@@ -3,6 +3,8 @@
 #include "devices/SpeechDevice.h"
 #include "lang/Lexer.h"
 
+#include <QWinEventNotifier>
+
 #include <Windows.h>
 
 namespace {
@@ -18,6 +20,7 @@ bool processIsElevated() {
 }
 
 Engine::Engine(QObject* parent) : QObject(parent) {
+    timer_.setTimerType(Qt::PreciseTimer);
     timer_.setInterval(16);
     connect(&timer_, &QTimer::timeout, this, &Engine::tick);
     bus_.setDebugHandler([this](const std::string& text) { emit debugMessage(QString::fromStdString(text)); });
@@ -55,6 +58,7 @@ bool Engine::run(const QString& source) {
         speechStatus_ = QString::fromStdString(bus_.speech().status());
     }
     running_ = true;
+    armSpeechNotify();
     timer_.start();
     emit statusChanged();
     emit debugMessage(QStringLiteral("Script started. %1").arg(speechStatus_));
@@ -66,10 +70,34 @@ bool Engine::run(const QString& source) {
     return true;
 }
 
+void Engine::disarmSpeechNotify() {
+    if (!speechNotify_) return;
+    speechNotify_->setEnabled(false);
+    speechNotify_->deleteLater();
+    speechNotify_ = nullptr;
+}
+
+void Engine::armSpeechNotify() {
+    disarmSpeechNotify();
+    auto* handle = static_cast<Qt::HANDLE>(bus_.speech().notifyEvent());
+    if (!handle) return;
+    speechNotify_ = new QWinEventNotifier(handle, this);
+    connect(speechNotify_, &QWinEventNotifier::activated, this, [this](Qt::HANDLE) {
+        if (!running_ || inTick_) return;
+        tick();
+    });
+    speechNotify_->setEnabled(true);
+}
+
 void Engine::stop() {
     timer_.stop();
+    disarmSpeechNotify();
     if (running_) {
         running_ = false;
+        // Drop every key and button this script is holding before the
+        // recognizer is torn down, so a stop cannot leave a key down in Windows.
+        bus_.releaseGeneratedOutput();
+        bus_.endFrame();
         bus_.speech().stop();
         vm_.reset();
         bus_.reset();
@@ -79,7 +107,12 @@ void Engine::stop() {
 }
 
 void Engine::tick() {
-    if (!running_) return;
+    if (!running_ || inTick_) return;
+    struct TickGuard {
+        bool& flag;
+        ~TickGuard() { flag = false; }
+    } guard{inTick_};
+    inTick_ = true;
     bus_.beginFrame();
     if (bus_.speech().consumeWentToSleep()) {
         bus_.releaseGeneratedOutput();

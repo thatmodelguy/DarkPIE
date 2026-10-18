@@ -26,6 +26,8 @@
 #include <QProcess>
 #include <QPushButton>
 #include <QSettings>
+#include <QSlider>
+#include <QStandardPaths>
 #include <QSignalBlocker>
 #include <QSizePolicy>
 #include <QSplitter>
@@ -85,6 +87,20 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     runStopLay->addWidget(stopBtn);
     barGrid->addWidget(runStop, 0, 0, Qt::AlignCenter);
     barGrid->addWidget(checkBtn, 0, 0, Qt::AlignRight);
+
+    auto* micVol = new QWidget(buttonBar);
+    auto* micLay = new QHBoxLayout(micVol);
+    micLay->setContentsMargins(0, 0, 0, 0);
+    micLay->setSpacing(6);
+    auto* micLabel = new QLabel(micVol);
+    auto* micSlider = new QSlider(Qt::Horizontal, micVol);
+    micSlider->setRange(0, 100);
+    micSlider->setFixedWidth(140);
+    micSlider->setToolTip(QStringLiteral(
+        "Microphone volume while a script is running. Windows puts the previous volume back when the script stops."));
+    micLay->addWidget(micLabel);
+    micLay->addWidget(micSlider);
+    barGrid->addWidget(micVol, 0, 0, Qt::AlignLeft);
 
     auto* splitter = new QSplitter(Qt::Vertical, root);
     auto* editorPane = new QWidget;
@@ -217,6 +233,29 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     connect(micMenu_, &QMenu::aboutToShow, this, &MainWindow::rebuildMicrophoneMenu);
     {
         QSettings settings;
+        if (settings.value(QStringLiteral("micVolumeHold")).toBool()) {
+            const QString endpoint = settings.value(QStringLiteral("micVolumeHoldEndpoint")).toString();
+            const float level = settings.value(QStringLiteral("micVolumeHoldLevel"), 1.0).toFloat();
+            if (!endpoint.isEmpty() && SpeechDevice::forceEndpointVolume(endpoint.toStdString(), level)) {
+                settings.remove(QStringLiteral("micVolumeHold"));
+                settings.remove(QStringLiteral("micVolumeHoldEndpoint"));
+                settings.remove(QStringLiteral("micVolumeHoldLevel"));
+            }
+        }
+        int micPct = settings.value(QStringLiteral("micVolumePercent"), 100).toInt();
+        if (micPct < 0) micPct = 0;
+        if (micPct > 100) micPct = 100;
+        engine_.bus().speech().setCaptureVolumePercent(micPct);
+        micLabel->setText(QStringLiteral("Mic %1%").arg(micPct));
+        {
+            QSignalBlocker block(micSlider);
+            micSlider->setValue(micPct);
+        }
+        connect(micSlider, &QSlider::valueChanged, this, [this, micLabel](int value) {
+            micLabel->setText(QStringLiteral("Mic %1%").arg(value));
+            engine_.bus().speech().setCaptureVolumePercent(value);
+            QSettings().setValue(QStringLiteral("micVolumePercent"), value);
+        });
         engine_.bus().speech().setMicrophoneId(settings.value(QStringLiteral("microphoneId")).toString().toStdString());
         const bool sleepWake = settings.value(QStringLiteral("sleepWakeEnabled"), true).toBool();
         engine_.bus().speech().setSleepWakeEnabled(sleepWake);
@@ -317,18 +356,20 @@ bool MainWindow::openPath(const QString& path) {
         if (QFileInfo(tabs_->tabBar()->tabData(i).toString()).absoluteFilePath() == abs) {
             tabs_->setCurrentIndex(i);
             rememberRecent(abs);
+            noteScriptDirectory(abs);
             return true;
         }
     }
     addTab(abs, in.readAll());
     rememberRecent(abs);
+    noteScriptDirectory(abs);
     return true;
 }
 
 void MainWindow::openFile() {
     if (!maybeSave()) return;
     const QString path = QFileDialog::getOpenFileName(
-        this, QStringLiteral("Open GlovePIE script"), {},
+        this, QStringLiteral("Open GlovePIE script"), scriptDialogDirectory(),
         QStringLiteral("GlovePIE scripts (*.pie);;Text files (*.txt);;All files (*.*)"));
     if (path.isEmpty()) return;
     openPath(path);
@@ -362,11 +403,15 @@ void MainWindow::saveFile() {
     ed->document()->setModified(false);
     updateTitle();
     rememberRecent(currentPath());
+    noteScriptDirectory(currentPath());
 }
 
 void MainWindow::saveFileAs() {
+    const QString suggested = currentPath().isEmpty()
+                                  ? QDir(scriptDialogDirectory()).filePath(QStringLiteral("untitled.pie"))
+                                  : currentPath();
     const QString path = QFileDialog::getSaveFileName(
-        this, QStringLiteral("Save script"), currentPath().isEmpty() ? QStringLiteral("untitled.pie") : currentPath(),
+        this, QStringLiteral("Save script"), suggested,
         QStringLiteral("GlovePIE scripts (*.pie);;Text files (*.txt);;All files (*.*)"));
     if (path.isEmpty()) return;
     setCurrentPath(path);
@@ -388,6 +433,18 @@ void MainWindow::stopScript() {
 }
 
 void MainWindow::onEngineStatus() {
+    QSettings settings;
+    auto& speech = engine_.bus().speech();
+    if (speech.captureVolumeHeld()) {
+        settings.setValue(QStringLiteral("micVolumeHold"), true);
+        settings.setValue(QStringLiteral("micVolumeHoldEndpoint"),
+                          QString::fromStdString(speech.captureVolumeEndpoint()));
+        settings.setValue(QStringLiteral("micVolumeHoldLevel"), speech.captureVolumeOriginal());
+    } else if (settings.value(QStringLiteral("micVolumeHold")).toBool()) {
+        settings.remove(QStringLiteral("micVolumeHold"));
+        settings.remove(QStringLiteral("micVolumeHoldEndpoint"));
+        settings.remove(QStringLiteral("micVolumeHoldLevel"));
+    }
     QString extra;
     const QString phrase = engine_.lastPhrase();
     if (!phrase.isEmpty()) extra = QStringLiteral(" · heard \"%1\"").arg(phrase);
@@ -416,6 +473,23 @@ QStringList MainWindow::loadRecent() const {
 
 void MainWindow::saveRecent(const QStringList& files) const {
     QSettings().setValue(QStringLiteral("recentFiles"), files);
+}
+
+QString MainWindow::scriptDialogDirectory() const {
+    QSettings settings;
+    QString dir = settings.value(QStringLiteral("lastScriptDir")).toString();
+    if (dir.isEmpty()) {
+        const QStringList recent = loadRecent();
+        if (!recent.isEmpty()) dir = QFileInfo(recent.front()).absolutePath();
+    }
+    if (!dir.isEmpty() && QDir(dir).exists()) return dir;
+    return QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+}
+
+void MainWindow::noteScriptDirectory(const QString& filePath) {
+    const QString dir = QFileInfo(filePath).absolutePath();
+    if (dir.isEmpty() || !QDir(dir).exists()) return;
+    QSettings().setValue(QStringLiteral("lastScriptDir"), dir);
 }
 
 void MainWindow::rememberRecent(const QString& path) {

@@ -199,6 +199,15 @@ struct MidiDevice::Impl {
             in = nullptr;
         }
         if (out) {
+            for (int ch = 0; ch < 16; ++ch) {
+                bool any = false;
+                for (int n = 0; n < 128; ++n) {
+                    if (!outCh[ch].noteOn[n]) continue;
+                    any = true;
+                    midiOutShortMsg(out, static_cast<DWORD>((0x80 | ch) | (n << 8)));
+                }
+                if (any) midiOutShortMsg(out, static_cast<DWORD>((0xB0 | ch) | (123 << 8)));
+            }
             midiOutClose(out);
             out = nullptr;
         }

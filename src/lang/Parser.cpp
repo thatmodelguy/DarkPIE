@@ -432,7 +432,13 @@ StmtPtr Parser::waitStatement() {
     bool parens = match(TokenKind::LParen);
     stmt->duration = expression();
     if (parens) match(TokenKind::RParen);
-    if (check(TokenKind::Identifier)) {
+    // "s" is seconds only on the same line as the time. The next line's "s=1"
+    // is the S key, which is how the game scripts release movement.
+    const int unitLine = stmt->duration ? stmt->duration->line : stmt->line;
+    const bool unitIsAssignment =
+        peek(1).kind == TokenKind::Equal || peek(1).kind == TokenKind::ColonEqual ||
+        peek(1).kind == TokenKind::PlusEqual || peek(1).kind == TokenKind::MinusEqual;
+    if (check(TokenKind::Identifier) && peek().line == unitLine && !unitIsAssignment) {
         const std::string& u = peek().text;
         if (u == "ms" || u == "millisecond" || u == "milliseconds" || u == "s" || u == "sec" ||
             u == "second" || u == "seconds" || u == "minute" || u == "minutes" || u == "hour" ||

@@ -26,5 +26,6 @@ private:
     Token identifierOrKeyword();
     Token number();
     Token stringLiteral(char quote);
+    Token curlyString();
     Token tokenizeOne();
 };

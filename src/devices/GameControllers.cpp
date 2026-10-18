@@ -161,7 +161,45 @@ struct GameControllers::Impl {
 
     ~Impl() { shutdown(); }
 
+    void releaseInjected() {
+        if (!dryRun_) {
+            for (int i = 0; i < 4; ++i) {
+                if (xpad[i].vibe1 == 0.0 && xpad[i].vibe2 == 0.0) continue;
+                XINPUT_VIBRATION vib{};
+                XInputSetState(static_cast<DWORD>(i), &vib);
+            }
+            for (int i = 0; i < 16; ++i) {
+                bool hot = false;
+                for (double a : ppjoy[i].analog)
+                    if (a != 0.0) hot = true;
+                for (bool d : ppjoy[i].digital)
+                    if (d) hot = true;
+                if (!hot) continue;
+                ppjoy[i] = {};
+                ppjoySet(i + 1, "x", Value::number(0));
+            }
+            for (auto& w : wiis) {
+                if (w.hid == INVALID_HANDLE_VALUE || !w.rumble) continue;
+                w.rumble = false;
+                unsigned char leds = 0;
+                if (w.led[0]) leds |= 0x10;
+                if (w.led[1]) leds |= 0x20;
+                if (w.led[2]) leds |= 0x40;
+                if (w.led[3]) leds |= 0x80;
+                unsigned char rpt[2] = {0x11, leds};
+                HidD_SetOutputReport(w.hid, rpt, sizeof(rpt));
+            }
+        }
+        for (auto& p : xpad) {
+            p.vibe1 = 0;
+            p.vibe2 = 0;
+        }
+        for (auto& p : ppjoy) p = {};
+        for (auto& w : wiis) w.rumble = false;
+    }
+
     void shutdown() {
+        releaseInjected();
         for (auto& p : pads) {
             if (p.dev) {
                 p.dev->Unacquire();
@@ -1009,6 +1047,7 @@ void GameControllers::poll() {
 }
 
 void GameControllers::reset() {
+    impl_->dryRun_ = dryRun;
     impl_->shutdown();
     for (auto& p : impl_->ppjoy) p = {};
     for (auto& p : impl_->xpad) p = {};

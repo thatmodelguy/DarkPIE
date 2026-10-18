@@ -8,6 +8,8 @@
 #include <QString>
 #include <QTimer>
 
+class QWinEventNotifier;
+
 #include <string>
 
 class Engine : public QObject {
@@ -40,10 +42,15 @@ private slots:
     void tick();
 
 private:
+    void armSpeechNotify();
+    void disarmSpeechNotify();
+
     DeviceBus bus_;
     Vm vm_;
     QTimer timer_;
+    QWinEventNotifier* speechNotify_ = nullptr;
     bool running_ = false;
+    bool inTick_ = false;
     QString speechStatus_;
     size_t warningCursor_ = 0;
     std::string lastEmittedPhrase_;

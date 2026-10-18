@@ -1,10 +1,13 @@
 #include "SpeechDevice.h"
 
 #include <Windows.h>
+#include <endpointvolume.h>
+#include <mmdeviceapi.h>
 #include <sapi.h>
 
 #include <algorithm>
 #include <cctype>
+#include <cwctype>
 #include <sstream>
 
 namespace {
@@ -180,6 +183,92 @@ std::vector<std::string> canonWords(const std::string& phrase) {
     for (auto& w : words) w = spokenCanonical(w);
     return words;
 }
+
+std::wstring lowerWide(std::wstring s) {
+    for (wchar_t& c : s) c = static_cast<wchar_t>(towlower(c));
+    return s;
+}
+
+std::wstring waveKey(const std::wstring& tokenOrEndpoint) {
+    auto p = tokenOrEndpoint.rfind(L"{0.0.1.");
+    if (p == std::wstring::npos) {
+        p = tokenOrEndpoint.rfind(L'{');
+        if (p == std::wstring::npos) return {};
+    }
+    return lowerWide(tokenOrEndpoint.substr(p));
+}
+
+struct VolumeCom {
+    bool owned = false;
+    VolumeCom() {
+        HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+        owned = (hr == S_OK);
+    }
+    ~VolumeCom() {
+        if (owned) CoUninitialize();
+    }
+};
+
+IMMDevice* openCaptureDevice(IMMDeviceEnumerator* en, const std::wstring& wave) {
+    if (!en) return nullptr;
+    if (wave.empty()) {
+        IMMDevice* dev = nullptr;
+        if (FAILED(en->GetDefaultAudioEndpoint(eCapture, eConsole, &dev))) return nullptr;
+        return dev;
+    }
+    IMMDeviceCollection* col = nullptr;
+    if (FAILED(en->EnumAudioEndpoints(eCapture, DEVICE_STATE_ACTIVE, &col)) || !col) return nullptr;
+    UINT count = 0;
+    col->GetCount(&count);
+    IMMDevice* found = nullptr;
+    for (UINT i = 0; i < count && !found; ++i) {
+        IMMDevice* dev = nullptr;
+        if (FAILED(col->Item(i, &dev)) || !dev) continue;
+        LPWSTR id = nullptr;
+        if (SUCCEEDED(dev->GetId(&id)) && id) {
+            if (lowerWide(id).find(wave) != std::wstring::npos) found = dev;
+            CoTaskMemFree(id);
+        }
+        if (found != dev) dev->Release();
+    }
+    col->Release();
+    return found;
+}
+
+bool setDeviceScalar(IMMDevice* dev, float scalar, float* previous) {
+    if (!dev) return false;
+    IAudioEndpointVolume* vol = nullptr;
+    HRESULT hr = dev->Activate(__uuidof(IAudioEndpointVolume), CLSCTX_ALL, nullptr, reinterpret_cast<void**>(&vol));
+    if (FAILED(hr) || !vol) return false;
+    if (previous && FAILED(vol->GetMasterVolumeLevelScalar(previous))) *previous = 1.f;
+    scalar = std::clamp(scalar, 0.f, 1.f);
+    hr = vol->SetMasterVolumeLevelScalar(scalar, nullptr);
+    vol->Release();
+    return SUCCEEDED(hr);
+}
+
+bool adjustCapture(const std::wstring& tokenOrEndpoint, float scalar, float* previous, std::string* endpointOut) {
+    VolumeCom com;
+    IMMDeviceEnumerator* en = nullptr;
+    HRESULT hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, __uuidof(IMMDeviceEnumerator),
+                                  reinterpret_cast<void**>(&en));
+    if (FAILED(hr) || !en) return false;
+    IMMDevice* dev = openCaptureDevice(en, waveKey(tokenOrEndpoint));
+    bool ok = false;
+    if (dev) {
+        if (endpointOut) {
+            LPWSTR id = nullptr;
+            if (SUCCEEDED(dev->GetId(&id)) && id) {
+                *endpointOut = wideToUtf8(id);
+                CoTaskMemFree(id);
+            }
+        }
+        ok = setDeviceScalar(dev, scalar, previous);
+        dev->Release();
+    }
+    en->Release();
+    return ok;
+}
 }
 
 SpeechDevice::SpeechDevice() = default;
@@ -300,6 +389,11 @@ bool SpeechDevice::start(const std::vector<std::string>& phrases, std::string& e
     if (!microphoneId_.empty()) audioToken = tokenFromId(utf8ToWide(microphoneId_));
     if (!audioToken) audioToken = defaultToken(SPCAT_AUDIOIN);
     if (audioToken) {
+        LPWSTR rawId = nullptr;
+        if (SUCCEEDED(audioToken->GetId(&rawId)) && rawId) {
+            activeTokenId_.assign(rawId);
+            CoTaskMemFree(rawId);
+        }
         hr = recognizer_->SetInput(audioToken, TRUE);
         audioToken->Release();
         if (FAILED(hr)) {
@@ -320,6 +414,7 @@ bool SpeechDevice::start(const std::vector<std::string>& phrases, std::string& e
         return false;
     }
 
+    // Win32 event, not a window message, so a guess can wake the script immediately.
     context_->SetNotifyWin32Event();
     context_->SetMaxAlternates(3);
     recognizer_->SetPropertyNum(L"CFGConfidenceRejectionThreshold", 0);
@@ -416,7 +511,42 @@ bool SpeechDevice::start(const std::vector<std::string>& phrases, std::string& e
                   " script commands + sleep/wake";
     else
         status_ = "Listening for " + std::to_string(phrases.size()) + " script commands";
+    applyCaptureVolume();
     return true;
+}
+
+void SpeechDevice::setCaptureVolumePercent(int percent) {
+    if (percent < 0) percent = 0;
+    if (percent > 100) percent = 100;
+    capturePercent_ = percent;
+    if (!volumeHeld_) return;
+    adjustCapture(utf8ToWide(volumeEndpoint_), capturePercent_ / 100.f, nullptr, nullptr);
+}
+
+bool SpeechDevice::forceEndpointVolume(const std::string& endpointId, float scalar) {
+    if (endpointId.empty()) return false;
+    return adjustCapture(utf8ToWide(endpointId), scalar, nullptr, nullptr);
+}
+
+void SpeechDevice::applyCaptureVolume() {
+    const float level = std::clamp(capturePercent_, 0, 100) / 100.f;
+    if (volumeHeld_) {
+        adjustCapture(utf8ToWide(volumeEndpoint_), level, nullptr, nullptr);
+        return;
+    }
+    float previous = 1.f;
+    std::string endpoint;
+    if (!adjustCapture(activeTokenId_, level, &previous, &endpoint) || endpoint.empty()) return;
+    volumeHeld_ = true;
+    volumeOriginal_ = previous;
+    volumeEndpoint_ = std::move(endpoint);
+}
+
+void SpeechDevice::restoreCaptureVolume() {
+    if (!volumeHeld_) return;
+    adjustCapture(utf8ToWide(volumeEndpoint_), volumeOriginal_, nullptr, nullptr);
+    volumeHeld_ = false;
+    volumeEndpoint_.clear();
 }
 
 void SpeechDevice::rebuildCommands(const std::vector<std::string>& phrases) {
@@ -559,6 +689,7 @@ void SpeechDevice::ingestRecoText(const std::string& phrase, int conf, bool hypo
 }
 
 void SpeechDevice::stop() {
+    restoreCaptureVolume();
     ready_ = false;
     commands_.clear();
     pendingPulses_.clear();
@@ -592,6 +723,12 @@ void SpeechDevice::stop() {
     asleep_ = false;
     wentToSleep_ = false;
     wokeUp_ = false;
+}
+
+void* SpeechDevice::notifyEvent() const {
+    std::lock_guard lock(mu_);
+    if (!context_) return nullptr;
+    return reinterpret_cast<void*>(context_->GetNotifyEventHandle());
 }
 
 void SpeechDevice::poll() {

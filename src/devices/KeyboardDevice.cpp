@@ -546,9 +546,17 @@ void KeyboardDevice::removeSwallowHook() {
 }
 
 void KeyboardDevice::reset() {
-    removeSwallowHook();
     desiredHeld_.clear();
+    std::vector<std::string> held(physicallyHeld_.begin(), physicallyHeld_.end());
+    std::sort(held.begin(), held.end(), [](const std::string& a, const std::string& b) {
+        const int pa = isModifierKeyName(a) ? 1 : 0;
+        const int pb = isModifierKeyName(b) ? 1 : 0;
+        if (pa != pb) return pa < pb;
+        return a < b;
+    });
+    for (const auto& key : held) sendNamed(key, false);
     physicallyHeld_.clear();
+    removeSwallowHook();
     swallowedVk_.clear();
 }
 

@@ -69,6 +69,9 @@ LRESULT CALLBACK swallowHookProc(int code, WPARAM wParam, LPARAM lParam) {
 MouseDevice::MouseDevice() { ensureRawInput(); }
 
 MouseDevice::~MouseDevice() {
+    for (const auto& b : physicallyHeld_) sendButton(b, false);
+    physicallyHeld_.clear();
+    desiredHeld_.clear();
     setSwallow(false);
     if (hwnd_) {
         DestroyWindow(static_cast<HWND>(hwnd_));
@@ -194,9 +197,10 @@ void MouseDevice::setSwallow(bool on) {
 }
 
 void MouseDevice::reset() {
-    setSwallow(false);
     desiredHeld_.clear();
+    for (const auto& b : physicallyHeld_) sendButton(b, false);
     physicallyHeld_.clear();
+    setSwallow(false);
     fakeDirectX_ = fakeDirectY_ = 0;
     combinedRealX_ = combinedRealY_ = 0;
     pendingRawX_ = pendingRawY_ = 0;

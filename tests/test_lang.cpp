@@ -435,6 +435,16 @@ int main() {
         check(n1 && n1->name == "s", "second assign target is s");
         Program w = parse("wait 1s\n");
         check(w.error.empty() && w.statements.size() == 1, "wait 1s still parses");
+        Program held = parse("if said(\"pull lever\")\nwait .50\ns=1\nend if\n");
+        check(held.error.empty(), "wait time does not swallow the next line's s key");
+        auto* heldIf = held.statements.empty() ? nullptr : dynamic_cast<IfStmt*>(held.statements[0].get());
+        auto* afterWait = heldIf && heldIf->thenBody.size() >= 2 ? dynamic_cast<AssignStmt*>(heldIf->thenBody[1].get()) : nullptr;
+        auto* sKey = afterWait ? dynamic_cast<NameExpr*>(afterWait->target.get()) : nullptr;
+        check(sKey && sKey->name == "s", "s after wait is an assignment");
+        Program unit = parse("wait 1 s\n");
+        auto* waitS = unit.statements.empty() ? nullptr : dynamic_cast<WaitStmt*>(unit.statements[0].get());
+        auto* waitLit = waitS ? dynamic_cast<LiteralExpr*>(waitS->duration.get()) : nullptr;
+        check(unit.error.empty() && waitLit && waitLit->value.unit == "s", "wait 1 s still means seconds");
     }
     {
         Lexer lexer("if said(\"walk\"\nw=1\nendif\nkey.enter =\n");
@@ -619,6 +629,10 @@ int main() {
                           "end if\n");
         if (!p.error.empty()) std::cerr << "press script parse: " << p.error << " line " << p.errorLine << "\n";
         check(p.error.empty(), "parse press Esc and single-quoted said");
+        Program curly = parse(std::string("Key.f = said(\xE2\x80\x9Cpress f\xE2\x80\x9D)\n"));
+        check(curly.error.empty(), "curly quotes are strings");
+        Program mixed = parse(std::string("if said(\"attack\xE2\x80\x9D)\ne=1\nend if\n"));
+        check(mixed.error.empty(), "straight quote closed by a curly quote");
     }
     {
         Program p = parse("if starting then\n  cursor2.visible = false\nendif\n"

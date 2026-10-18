@@ -165,6 +165,13 @@ Token Lexer::stringLiteral(char quote) {
     advance();
     std::string text;
     while (!atEnd() && peek() != quote) {
+        if (static_cast<unsigned char>(peek()) == 0xE2 && static_cast<unsigned char>(peek(1)) == 0x80 &&
+            (static_cast<unsigned char>(peek(2)) == 0x9D || static_cast<unsigned char>(peek(2)) == 0x99)) {
+            advance();
+            advance();
+            advance();
+            break;
+        }
         if (peek() == '\\') {
             advance();
             if (atEnd()) break;
@@ -177,6 +184,31 @@ Token Lexer::stringLiteral(char quote) {
         }
     }
     if (peek() == quote) advance();
+    return make(TokenKind::String, text, line, col);
+}
+
+Token Lexer::curlyString() {
+    int line = line_;
+    int col = column_;
+    const unsigned char close = static_cast<unsigned char>(peek(2)) == 0x9C ? 0x9D : 0x99;
+    advance();
+    advance();
+    advance();
+    std::string text;
+    while (!atEnd()) {
+        if (static_cast<unsigned char>(peek()) == 0xE2 && static_cast<unsigned char>(peek(1)) == 0x80 &&
+            static_cast<unsigned char>(peek(2)) == close) {
+            advance();
+            advance();
+            advance();
+            break;
+        }
+        if (peek() == '"' || peek() == '\'' || peek() == '\n') {
+            if (peek() != '\n') advance();
+            break;
+        }
+        text.push_back(advance());
+    }
     return make(TokenKind::String, text, line, col);
 }
 
@@ -202,6 +234,9 @@ Token Lexer::tokenizeOne() {
         return make(TokenKind::Mod, "%", line, col);
     }
     if (c == '"' || c == '`') return stringLiteral(c);
+    if (static_cast<unsigned char>(c) == 0xE2 && static_cast<unsigned char>(peek(1)) == 0x80 &&
+        (static_cast<unsigned char>(peek(2)) == 0x9C || static_cast<unsigned char>(peek(2)) == 0x98))
+        return curlyString();
     if (c == '\'') {
         bool closed = false;
         for (size_t k = 1; i_ + k < src_.size() && src_[i_ + k] != '\n'; ++k) {

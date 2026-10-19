@@ -504,7 +504,7 @@ int main() {
         check(bus.speech().said("go", 1), "go fires as soon as it is heard");
         check(!bus.speech().said("go", 5), "complete-phrase confidence waits for the finished result");
         bus.speech().hearForTest("go up", 0, true, 30);
-        check(bus.speech().said("go up", 1), "go up guesses once the rest is heard");
+        check(!bus.speech().said("go up", 1), "go up never fires when go is a command");
 
         bus.beginFrame();
         bus.speech().hearForTest("go", 0, true, 35);
@@ -522,6 +522,21 @@ int main() {
         check(bus.speech().said("use", 1), "first use in a repeated phrase fires");
         bus.beginFrame();
         check(bus.speech().said("use", 1), "second use fires on the next frame");
+    }
+    {
+        DeviceBus bus;
+        bus.dryRun = true;
+        bus.beginFrame();
+        bus.speech().setCommandsForTest({"use item", "use", "go up", "go left", "go right"});
+        bus.speech().hearForTest("use item", 1, false, 10);
+        check(bus.speech().said("use", 1), "use fires when use item is also a command");
+        check(!bus.speech().said("use item", 1), "use item is not listened for when use is a command");
+
+        bus.beginFrame();
+        bus.speech().hearForTest("go", 0, true, 20);
+        check(!bus.speech().said("go up", 1) && !bus.speech().said("go left", 1), "go alone waits for the second word");
+        bus.speech().hearForTest("go left", 0, true, 20);
+        check(bus.speech().said("go left", 1), "go left fires once left is heard");
     }
     {
         std::ifstream in("scripts/examples/voice_game.pie");

@@ -93,17 +93,28 @@ private:
     struct PendingPulse {
         std::string phrase;
         int conf = 0;
+        // Microphone time of the speech event in seconds, or negative when unknown.
+        double heardAt = -1.0;
     };
+    // Wall clock (QueryPerformanceCounter) when the microphone stream started,
+    // so the log can show how long after the audio a command fired.
+    long long audioStartQpc_ = 0;
+    double audioBytesPerSec_ = 0.0;
+    double eventHeardAt_ = -1.0;
+    double secondsSinceAudioStart() const;
     std::vector<CommandPhrase> commands_;
     std::vector<PendingPulse> pendingPulses_;
     std::vector<std::string> progress_;
     // How many times each command has already fired inside the current utterance.
     std::unordered_map<std::string, int> firedThisUtterance_;
     unsigned long long utterancePos_ = 0;
+    // Counts SAPI phrase starts; 0 until the first one.
+    unsigned long long phraseSerial_ = 0;
     bool expectNewUtterance_ = true;
     bool utteranceClosed_ = false;
 
     void rebuildCommands(const std::vector<std::string>& phrases);
+    bool listensFor(const std::string& phrase) const;
     std::vector<std::string> matchCommands(const std::string& heard, bool hypothesis) const;
     void beginResultUtterance(unsigned long long audioPos);
     void queueMatches(const std::string& heard, int conf, bool hypothesis);

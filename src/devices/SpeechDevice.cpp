@@ -483,11 +483,11 @@ bool SpeechDevice::start(const std::vector<std::string>& phrases, std::string& e
         listen.push_back("wakeup");
     }
     rebuildCommands(listen);
-    // Every command is an alternative of one rule. The top rule repeats that
-    // rule, so "use use use" is three commands in one breath instead of one
-    // command that waits until the speaking stops.
+    // Every command is an alternative of one top-level rule, so each spoken
+    // command is its own result. A repeating rule made "use use use" one long
+    // phrase that only finished when the speaking stopped.
     SPSTATEHANDLE hItem = nullptr;
-    hr = grammar_->GetRule(L"item", 1, 0, TRUE, &hItem);
+    hr = grammar_->GetRule(L"item", 1, SPRAF_TopLevel | SPRAF_Active, TRUE, &hItem);
     ULONG propId = 1;
     auto addPhrase = [&](const std::string& form, float weight) -> HRESULT {
         if (form.empty() || !hItem) return S_OK;
@@ -510,6 +510,7 @@ bool SpeechDevice::start(const std::vector<std::string>& phrases, std::string& e
         hr = addPhrase("darkpie idle", 1.0f);
     } else {
         for (const auto& p : listen) {
+            if (!listensFor(p)) continue;
             std::string n = normalize(p);
             int words = 1;
             for (char c : n)
@@ -521,16 +522,6 @@ bool SpeechDevice::start(const std::vector<std::string>& phrases, std::string& e
             }
             if (FAILED(hr)) break;
         }
-    }
-    if (SUCCEEDED(hr)) {
-        SPSTATEHANDLE hTop = nullptr;
-        hr = grammar_->GetRule(L"run", 2, SPRAF_TopLevel | SPRAF_Active, TRUE, &hTop);
-        SPSTATEHANDLE hMore = nullptr;
-        if (SUCCEEDED(hr)) hr = grammar_->CreateNewState(hTop, &hMore);
-        if (SUCCEEDED(hr)) hr = grammar_->AddRuleTransition(hTop, hMore, hItem, 1.0f, nullptr);
-        if (SUCCEEDED(hr)) hr = grammar_->AddRuleTransition(hMore, hMore, hItem, 1.0f, nullptr);
-        if (SUCCEEDED(hr))
-            hr = grammar_->AddWordTransition(hMore, nullptr, nullptr, nullptr, SPWT_LEXICAL, 1.0f, nullptr);
     }
     if (FAILED(hr)) {
         error = "Could not build speech command grammar.";
@@ -547,6 +538,18 @@ bool SpeechDevice::start(const std::vector<std::string>& phrases, std::string& e
 
     context_->SetContextState(SPCS_ENABLED);
     recognizer_->SetRecoState(SPRST_ACTIVE_ALWAYS);
+    {
+        LARGE_INTEGER t;
+        QueryPerformanceCounter(&t);
+        audioStartQpc_ = t.QuadPart;
+        audioBytesPerSec_ = 0.0;
+        GUID fmtId{};
+        WAVEFORMATEX* wf = nullptr;
+        if (SUCCEEDED(recognizer_->GetFormat(SPWF_SRENGINE, &fmtId, &wf)) && wf) {
+            audioBytesPerSec_ = wf->nAvgBytesPerSec;
+            CoTaskMemFree(wf);
+        }
+    }
     firedThisUtterance_.clear();
     pendingPulses_.clear();
     progress_.clear();
@@ -587,6 +590,32 @@ void SpeechDevice::rebuildCommands(const std::vector<std::string>& phrases) {
         }
         if (!dup) commands_.push_back(std::move(cmd));
     }
+    // A command that starts with a whole shorter command can never fire, since
+    // the shorter one fires first. Listening for it anyway makes the engine
+    // wait after the shorter one in case the longer one follows.
+    std::vector<CommandPhrase> kept;
+    for (const auto& cmd : commands_) {
+        const CommandPhrase* by = nullptr;
+        for (const auto& other : commands_) {
+            if (other.words.size() >= cmd.words.size()) continue;
+            if (std::equal(other.words.begin(), other.words.end(), cmd.words.begin())) {
+                by = &other;
+                break;
+            }
+        }
+        if (by)
+            progress_.push_back("Not listening for \"" + cmd.display + "\": \"" + by->display + "\" fires first");
+        else
+            kept.push_back(cmd);
+    }
+    commands_ = std::move(kept);
+}
+
+bool SpeechDevice::listensFor(const std::string& phrase) const {
+    auto words = canonWords(normalize(phrase));
+    for (const auto& cmd : commands_)
+        if (cmd.words == words) return true;
+    return false;
 }
 
 std::vector<std::string> SpeechDevice::matchCommands(const std::string& heard, bool hypothesis) const {
@@ -660,7 +689,7 @@ void SpeechDevice::queueMatches(const std::string& heard, int conf, bool hypothe
         if (n <= prev) continue;
         firedThisUtterance_[m] = n;
         for (int extra = prev; extra < n; ++extra) {
-            pendingPulses_.push_back(PendingPulse{m, conf});
+            pendingPulses_.push_back(PendingPulse{m, conf, eventHeardAt_});
             progress_.push_back(hypothesis ? ("Guess: \"" + m + "\"") : ("Recognised \"" + m + "\""));
         }
     }
@@ -670,10 +699,21 @@ void SpeechDevice::emitPendingPulse() {
     if (pendingPulses_.empty()) return;
     PendingPulse p = pendingPulses_.front();
     pendingPulses_.erase(pendingPulses_.begin());
+    if (p.heardAt >= 0.0) {
+        const int ms = static_cast<int>((secondsSinceAudioStart() - p.heardAt) * 1000.0);
+        progress_.push_back("Fired \"" + p.phrase + "\" " + std::to_string(ms) + " ms after it was heard");
+    }
     pulses_[p.phrase] = p.conf;
     lastRecognized = p.phrase;
     completePhrase = p.phrase;
     partialPhrase = p.phrase;
+}
+
+double SpeechDevice::secondsSinceAudioStart() const {
+    LARGE_INTEGER t, f;
+    QueryPerformanceCounter(&t);
+    QueryPerformanceFrequency(&f);
+    return double(t.QuadPart - audioStartQpc_) / double(f.QuadPart);
 }
 
 void SpeechDevice::ingestRecoText(const std::string& phrase, int conf, bool hypothesis, unsigned long long audioPos) {
@@ -748,7 +788,6 @@ void SpeechDevice::poll() {
         while (context_->GetEvents(1, &event, &fetched) == S_OK && fetched == 1) {
             if (event.eEventId == SPEI_SOUND_START) {
                 inSound = true;
-                expectNewUtterance_ = true;
                 continue;
             }
             if (event.eEventId == SPEI_SOUND_END) {
@@ -757,7 +796,7 @@ void SpeechDevice::poll() {
             }
             if (event.eEventId == SPEI_PHRASE_START) {
                 inPhrase = true;
-                expectNewUtterance_ = true;
+                ++phraseSerial_;
                 continue;
             }
             const bool hypothesis = event.eEventId == SPEI_HYPOTHESIS;
@@ -765,18 +804,23 @@ void SpeechDevice::poll() {
             if ((hypothesis || accepted) && event.lParam) {
                 auto* result = reinterpret_cast<ISpRecoResult*>(event.lParam);
                 wchar_t* text = nullptr;
-                unsigned long long audioPos = 0;
+                // The guess and the finished result of one phrase share a
+                // phrase number. Their start times can differ slightly.
+                const unsigned long long audioPos = phraseSerial_;
                 int conf = SP_NORMAL_CONFIDENCE;
                 SPPHRASE* spPhrase = nullptr;
                 if (SUCCEEDED(result->GetPhrase(&spPhrase)) && spPhrase) {
                     conf = static_cast<int>(spPhrase->Rule.Confidence);
-                    audioPos = spPhrase->ftStartTime != 0 ? spPhrase->ftStartTime : spPhrase->ullAudioStreamPosition;
                     CoTaskMemFree(spPhrase);
                 }
                 if (SUCCEEDED(result->GetText(SP_GETWHOLEPHRASE, SP_GETWHOLEPHRASE, TRUE, &text, nullptr)) && text) {
                     std::string phrase = normalize(wideToUtf8(text));
                     CoTaskMemFree(text);
+                    eventHeardAt_ = audioBytesPerSec_ > 0.0
+                                        ? double(event.ullAudioStreamOffset) / audioBytesPerSec_
+                                        : -1.0;
                     ingestRecoText(phrase, conf, hypothesis, audioPos);
+                    eventHeardAt_ = -1.0;
                 } else if (accepted) {
                     utteranceClosed_ = true;
                     inPhrase = false;
@@ -784,9 +828,9 @@ void SpeechDevice::poll() {
                 result->Release();
             }
         }
-        // A recognition pauses the context until Resume. Restarting the
-        // recognizer here used to drop the start of the next word.
-        context_->Resume(0);
+        // No Resume here: the rules are SPRS_ACTIVE, so a recognition never
+        // pauses the context, and each Resume blocks the frame for 30-50 ms
+        // while the engine catches up, which stacked commands up.
     }
     emitPendingPulse();
     applySleepWake();

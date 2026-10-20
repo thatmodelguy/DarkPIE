@@ -119,7 +119,7 @@ void Vm::reset() {
     waitUntil_.clear();
     seqActive_.clear();
     keepDownUntil_.clear();
-    toggles_.clear();
+    toggleWasOn_.clear();
     deltaPrev_.clear();
     deltaHasPrev_.clear();
     smoothHist_.clear();
@@ -676,11 +676,15 @@ Value Vm::eval(const Expr& expr, DeviceBus& bus) {
 
 void Vm::assign(const Expr& target, const Value& value, DeviceBus& bus, bool force) {
     if (auto* call = dynamic_cast<const CallExpr*>(&target); call && call->name == "toggle" && !call->args.empty()) {
-        if (!value.isTruthy()) return;
+        // Flips once each time the condition turns on, starting from the
+        // target's real state, so another line releasing it is respected.
+        const bool on = value.isTruthy();
+        bool& wasOn = toggleWasOn_[call];
+        const bool rising = on && !wasOn;
+        wasOn = on;
+        if (!rising) return;
         std::string path = targetPath(*call->args[0], bus);
-        bool next = !toggles_[path];
-        toggles_[path] = next;
-        bus.set(path, Value::boolean(next), true);
+        bus.set(path, Value::boolean(!bus.get(path).isTruthy()), true);
         return;
     }
     bus.set(targetPath(target, bus), value, force);

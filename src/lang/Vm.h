@@ -44,7 +44,7 @@ private:
     std::unordered_map<int, std::chrono::steady_clock::time_point> waitUntil_;
     std::unordered_map<int, bool> seqActive_;
     std::unordered_map<int, std::chrono::steady_clock::time_point> keepDownUntil_;
-    std::unordered_map<std::string, bool> toggles_;
+    std::unordered_map<const CallExpr*, bool> toggleWasOn_;
     std::unordered_map<int, double> deltaPrev_;
     std::unordered_map<int, bool> deltaHasPrev_;
     std::unordered_map<int, std::vector<double>> smoothHist_;

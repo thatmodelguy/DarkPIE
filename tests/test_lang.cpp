@@ -381,6 +381,42 @@ int main() {
         check(bus.keyboard().heldThisFrame().count("ctrl") == 0, "toggle off on second said");
     }
     {
+        DeviceBus bus;
+        bus.dryRun = true;
+        bus.mouse().dryRun = true;
+        Vm vm;
+        vm.load(parse("toggle(mouse.leftbutton)=said(\"hold left\")\n"
+                      "if said(\"release\")\nmouse.leftbutton = 0\nend if\n"));
+        auto say = [&](const char* phrase) {
+            bus.beginFrame();
+            if (phrase) bus.speech().injectRecognition(phrase, 0, false);
+            vm.tick(bus);
+            bus.endFrame();
+        };
+        say("hold left");
+        check(bus.get("mouse.leftbutton").isTruthy(), "toggle presses the left button");
+        say(nullptr);
+        say("release");
+        check(!bus.get("mouse.leftbutton").isTruthy(), "release lets the button go");
+        say(nullptr);
+        say("hold left");
+        check(bus.get("mouse.leftbutton").isTruthy(), "toggle presses again after another line released it");
+    }
+    {
+        DeviceBus bus;
+        bus.dryRun = true;
+        bus.keyboard().dryRun = true;
+        Vm vm;
+        vm.load(parse("toggle(key.a)=var.held\n"));
+        bus.set("var.held", Value::boolean(true), false);
+        for (int i = 0; i < 3; ++i) {
+            bus.beginFrame();
+            vm.tick(bus);
+            bus.endFrame();
+        }
+        check(bus.keyboard().heldThisFrame().count("a") == 1, "a held condition toggles once, not every frame");
+    }
+    {
         std::ifstream in("scripts/examples/voice_game.pie");
         if (!in) in.open("../../scripts/examples/voice_game.pie");
         if (!in) in.open("../scripts/examples/voice_game.pie");

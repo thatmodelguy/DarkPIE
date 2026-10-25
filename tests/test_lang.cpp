@@ -4,6 +4,7 @@
 #include "devices/SpeechDevice.h"
 #include "lang/Lexer.h"
 #include "lang/Parser.h"
+#include "lang/ScriptCheck.h"
 #include "lang/Vm.h"
 
 #include <chrono>
@@ -488,6 +489,51 @@ int main() {
         Program p = parser.parseAll();
         check(!p.errors.empty(), "parseAll reports errors");
         check(!p.error.empty(), "parseAll sets first error");
+        check(p.errors[0].column >= 1, "parse errors carry a column");
+        check(p.errors[0].message.find("instead of") != std::string::npos ||
+                  p.errors[0].message.find("expected") != std::string::npos,
+              "parse errors name what was expected");
+    }
+    {
+        // A broken line must not stop the good lines from running.
+        Lexer lexer("Key.Space = said(\"jump\")\n@@@\nKey.Enter = said(\"ok\")\n");
+        Parser parser(lexer.tokenize());
+        Program p = parser.parseAll();
+        check(p.statements.size() >= 1, "good statements survive a broken line");
+        DeviceBus bus;
+        bus.dryRun = true;
+        bus.keyboard().dryRun = true;
+        Vm vm;
+        vm.load(std::move(p));
+        bus.beginFrame();
+        bus.speech().injectRecognition("jump", 0, false);
+        vm.tick(bus);
+        bus.endFrame();
+        check(bus.keyboard().heldThisFrame().count("space") == 1, "script still runs after a parse warning");
+    }
+    {
+        Program p = parse(
+            "Key.W = KeepDown(Microphone.Sahid(\"step foward\"), .50)\n"
+            "Key.Up = KeeppDown(Microphone.Said(\"go up\"), .10)\n"
+            "Keey.Esc = KeepDown(Microphone.Said(\"pause game\"), .10)\n"
+            "Mouse.LeftButton = KeepDown(Microphone.Said(\"ok\"), .10)\n");
+        check(p.error.empty(), "sabotaged names still parse");
+        auto names = checkScriptNames(p);
+        bool sawSahid = false, sawKeepp = false, sawKeey = false;
+        for (const auto& e : names) {
+            // Lexer folds names to lowercase; suggestions keep the usual spelling.
+            if (e.message.find("sahid") != std::string::npos && e.message.find("Said") != std::string::npos)
+                sawSahid = true;
+            if (e.message.find("keeppdown") != std::string::npos &&
+                e.message.find("KeepDown") != std::string::npos)
+                sawKeepp = true;
+            if (e.message.find("keey") != std::string::npos && e.message.find("Key") != std::string::npos)
+                sawKeey = true;
+        }
+        check(sawSahid, "Sahid is flagged as Said typo");
+        check(sawKeepp, "KeeppDown is flagged as KeepDown typo");
+        check(sawKeey, "Keey is flagged as Key typo");
+        check(names.size() >= 3, "all three sabotaged names are reported");
     }
     {
         Program p = parse("if said(\"walk\") error see me\nw=1\nendif\n");

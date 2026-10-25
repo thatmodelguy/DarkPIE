@@ -1,7 +1,14 @@
 #pragma once
 
 #include <QPlainTextEdit>
+#include <QSet>
 #include <QSyntaxHighlighter>
+
+struct ScriptErrorMark {
+    int line = 1;
+    int column = 1;
+    int length = 1;
+};
 
 class PieHighlighter : public QSyntaxHighlighter {
 public:
@@ -15,8 +22,10 @@ class ScriptEditor : public QPlainTextEdit {
 public:
     explicit ScriptEditor(QWidget* parent = nullptr);
     void setErrorLines(const QList<int>& lines);
+    void setErrorMarks(const QList<ScriptErrorMark>& marks);
     void clearErrors();
     void goToLine(int line);
+    void goToPosition(int line, int column);
     int lineNumberAreaWidth() const;
     void lineNumberAreaPaintEvent(QPaintEvent* event);
 
@@ -29,4 +38,5 @@ private slots:
 
 private:
     QWidget* lineNumberArea_ = nullptr;
+    QSet<int> errorLineNumbers_;
 };

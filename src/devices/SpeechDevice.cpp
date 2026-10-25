@@ -278,6 +278,20 @@ bool adjustCapture(const std::wstring& tokenOrEndpoint, float scalar, float* pre
     return ok;
 }
 
+// SAPI puts its own saved microphone level on when it opens the microphone,
+// so the script's level is set again through SAPI's audio object afterward.
+void setEngineCaptureLevel(ISpRecognizer* recognizer, int percent) {
+    if (!recognizer) return;
+    ISpStreamFormat* stream = nullptr;
+    if (FAILED(recognizer->GetInputStream(&stream)) || !stream) return;
+    ISpAudio* audio = nullptr;
+    if (SUCCEEDED(stream->QueryInterface(IID_ISpAudio, reinterpret_cast<void**>(&audio))) && audio) {
+        audio->SetVolumeLevel(static_cast<ULONG>(std::clamp(percent, 0, 100)) * 100);
+        audio->Release();
+    }
+    stream->Release();
+}
+
 // SAPI's capture buffer defaults to 500 ms, and 200 ms is the smallest capacity
 // it will accept. The notify size is the piece of audio the engine actually
 // reads, so a guess can start after about 20 ms instead of waiting out the buffer.
@@ -427,9 +441,19 @@ bool SpeechDevice::start(const std::vector<std::string>& phrases, std::string& e
     if (!microphoneId_.empty()) audioToken = tokenFromId(utf8ToWide(microphoneId_));
     if (!audioToken) audioToken = defaultToken(SPCAT_AUDIOIN);
     if (audioToken) {
+        activeTokenId_.clear();
+        LPWSTR rawId = nullptr;
+        if (SUCCEEDED(audioToken->GetId(&rawId)) && rawId) {
+            activeTokenId_.assign(rawId);
+            CoTaskMemFree(rawId);
+        }
+        // Set the Windows level before the recognizer opens the microphone,
+        // so the change never lands on a capture stream that is already running.
+        applyCaptureVolume();
         hr = recognizer_->SetInput(audioToken, TRUE);
         audioToken->Release();
         if (FAILED(hr)) {
+            restoreCaptureVolume();
             error = "Could not open the selected microphone.";
             status_ = error;
             return false;
@@ -538,6 +562,7 @@ bool SpeechDevice::start(const std::vector<std::string>& phrases, std::string& e
 
     context_->SetContextState(SPCS_ENABLED);
     recognizer_->SetRecoState(SPRST_ACTIVE_ALWAYS);
+    if (volumeHeld_) setEngineCaptureLevel(recognizer_, capturePercent_);
     {
         LARGE_INTEGER t;
         QueryPerformanceCounter(&t);
@@ -567,9 +592,30 @@ bool SpeechDevice::start(const std::vector<std::string>& phrases, std::string& e
     return true;
 }
 
+void SpeechDevice::setCaptureVolumePercent(int percent) {
+    capturePercent_ = std::clamp(percent, 0, 100);
+}
+
 bool SpeechDevice::forceEndpointVolume(const std::string& endpointId, float scalar) {
     if (endpointId.empty()) return false;
     return adjustCapture(utf8ToWide(endpointId), scalar, nullptr, nullptr);
+}
+
+void SpeechDevice::applyCaptureVolume() {
+    if (volumeHeld_) return;
+    float previous = 1.f;
+    std::string endpoint;
+    if (!adjustCapture(activeTokenId_, capturePercent_ / 100.f, &previous, &endpoint) || endpoint.empty()) return;
+    volumeHeld_ = true;
+    volumeOriginal_ = previous;
+    volumeEndpoint_ = std::move(endpoint);
+}
+
+void SpeechDevice::restoreCaptureVolume() {
+    if (!volumeHeld_) return;
+    adjustCapture(utf8ToWide(volumeEndpoint_), volumeOriginal_, nullptr, nullptr);
+    volumeHeld_ = false;
+    volumeEndpoint_.clear();
 }
 
 void SpeechDevice::rebuildCommands(const std::vector<std::string>& phrases) {
@@ -763,6 +809,9 @@ void SpeechDevice::stop() {
         CoUninitialize();
         comInit_ = false;
     }
+    // The recognizer has released the microphone, so restoring the Windows
+    // volume cannot change a capture stream that is still running.
+    restoreCaptureVolume();
     status_ = "Speech idle";
     asleep_ = false;
     wentToSleep_ = false;

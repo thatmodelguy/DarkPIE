@@ -29,7 +29,14 @@ public:
     void setMicrophoneId(std::string id);
     const std::string& microphoneId() const { return microphoneId_; }
 
-    // One-time undo if an older build left the Windows microphone level changed.
+    // While a script is listening, the selected microphone's Windows volume is
+    // set to this percent and the previous level is restored when listening stops.
+    void setCaptureVolumePercent(int percent);
+    int captureVolumePercent() const { return capturePercent_; }
+    bool captureVolumeHeld() const { return volumeHeld_; }
+    const std::string& captureVolumeEndpoint() const { return volumeEndpoint_; }
+    float captureVolumeOriginal() const { return volumeOriginal_; }
+    // Puts a level back after a crash left it changed.
     static bool forceEndpointVolume(const std::string& endpointId, float scalar);
 
     bool start(const std::vector<std::string>& phrases, std::string& error);
@@ -72,6 +79,14 @@ private:
     bool confidenceOk(int required, int sapiConfidence, bool partial) const;
 
     std::string microphoneId_;
+    std::wstring activeTokenId_;
+    int capturePercent_ = 100;
+    bool volumeHeld_ = false;
+    std::string volumeEndpoint_;
+    float volumeOriginal_ = 1.f;
+
+    void applyCaptureVolume();
+    void restoreCaptureVolume();
 
     ISpVoice* voice_ = nullptr;
     ISpRecognizer* recognizer_ = nullptr;

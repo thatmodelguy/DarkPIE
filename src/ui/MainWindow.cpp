@@ -3,6 +3,8 @@
 
 #include "devices/SpeechDevice.h"
 #include "lang/Lexer.h"
+#include "lang/Parser.h"
+#include "lang/ScriptCheck.h"
 
 #include <algorithm>
 
@@ -26,6 +28,7 @@
 #include <QProcess>
 #include <QPushButton>
 #include <QSettings>
+#include <QSlider>
 #include <QStandardPaths>
 #include <QSignalBlocker>
 #include <QSizePolicy>
@@ -86,6 +89,21 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     runStopLay->addWidget(stopBtn);
     barGrid->addWidget(runStop, 0, 0, Qt::AlignCenter);
     barGrid->addWidget(checkBtn, 0, 0, Qt::AlignRight);
+
+    auto* micVol = new QWidget(buttonBar);
+    auto* micLay = new QHBoxLayout(micVol);
+    micLay->setContentsMargins(0, 0, 0, 0);
+    micLay->setSpacing(6);
+    auto* micLabel = new QLabel(micVol);
+    auto* micSlider = new QSlider(Qt::Horizontal, micVol);
+    micSlider->setRange(0, 100);
+    micSlider->setFixedWidth(140);
+    micSlider->setToolTip(QStringLiteral(
+        "Microphone volume used while a script is running. It is set when you press Run, before the "
+        "microphone opens, and the previous volume is put back when the script stops."));
+    micLay->addWidget(micLabel);
+    micLay->addWidget(micSlider);
+    barGrid->addWidget(micVol, 0, 0, Qt::AlignLeft);
 
     auto* splitter = new QSplitter(Qt::Vertical, root);
     auto* editorPane = new QWidget;
@@ -227,7 +245,18 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
                 settings.remove(QStringLiteral("micVolumeHoldLevel"));
             }
         }
-        settings.remove(QStringLiteral("micVolumePercent"));
+        const int micPct = std::clamp(settings.value(QStringLiteral("micVolumePercent"), 100).toInt(), 0, 100);
+        engine_.bus().speech().setCaptureVolumePercent(micPct);
+        micLabel->setText(QStringLiteral("Mic %1%").arg(micPct));
+        {
+            QSignalBlocker block(micSlider);
+            micSlider->setValue(micPct);
+        }
+        connect(micSlider, &QSlider::valueChanged, this, [this, micLabel](int value) {
+            micLabel->setText(QStringLiteral("Mic %1%").arg(value));
+            engine_.bus().speech().setCaptureVolumePercent(value);
+            QSettings().setValue(QStringLiteral("micVolumePercent"), value);
+        });
         engine_.bus().speech().setMicrophoneId(settings.value(QStringLiteral("microphoneId")).toString().toStdString());
         const bool sleepWake = settings.value(QStringLiteral("sleepWakeEnabled"), true).toBool();
         engine_.bus().speech().setSleepWakeEnabled(sleepWake);
@@ -395,7 +424,25 @@ void MainWindow::runScript() {
     auto* ed = currentEditor();
     if (!ed) return;
     debug_->clear();
-    engine_.run(ed->toPlainText());
+    ed->clearErrors();
+    const QString source = ed->toPlainText();
+    // Mark problems the same way Check for Errors does, then still start the script.
+    Lexer lexer(source.toStdString());
+    auto tokens = lexer.tokenize();
+    QList<ScriptErrorMark> marks;
+    for (const auto& t : tokens) {
+        if (t.kind == TokenKind::Unknown) {
+            marks.push_back({t.line, t.column, std::max(1, static_cast<int>(t.text.size()))});
+        }
+    }
+    Parser parser(tokens);
+    Program program = parser.parseAll();
+    for (const auto& err : program.errors)
+        marks.push_back({err.line, err.column, std::max(1, err.length)});
+    for (const auto& err : checkScriptNames(program))
+        marks.push_back({err.line, err.column, std::max(1, err.length)});
+    if (!marks.isEmpty()) ed->setErrorMarks(marks);
+    engine_.run(source);
     updateRunningUi();
 }
 
@@ -405,6 +452,19 @@ void MainWindow::stopScript() {
 }
 
 void MainWindow::onEngineStatus() {
+    // Remember the level to put back, so a crash cannot leave the microphone changed.
+    QSettings settings;
+    auto& speech = engine_.bus().speech();
+    if (speech.captureVolumeHeld()) {
+        settings.setValue(QStringLiteral("micVolumeHold"), true);
+        settings.setValue(QStringLiteral("micVolumeHoldEndpoint"),
+                          QString::fromStdString(speech.captureVolumeEndpoint()));
+        settings.setValue(QStringLiteral("micVolumeHoldLevel"), speech.captureVolumeOriginal());
+    } else if (settings.value(QStringLiteral("micVolumeHold")).toBool()) {
+        settings.remove(QStringLiteral("micVolumeHold"));
+        settings.remove(QStringLiteral("micVolumeHoldEndpoint"));
+        settings.remove(QStringLiteral("micVolumeHoldLevel"));
+    }
     QString extra;
     const QString phrase = engine_.lastPhrase();
     if (!phrase.isEmpty()) extra = QStringLiteral(" · heard \"%1\"").arg(phrase);
@@ -646,11 +706,11 @@ void MainWindow::checkScript() {
     const QString source = ed->toPlainText();
     Lexer lexer(source.toStdString());
     auto tokens = lexer.tokenize();
-    QList<int> lines;
+    QList<ScriptErrorMark> marks;
     QStringList report;
     for (const auto& t : tokens) {
         if (t.kind == TokenKind::Unknown) {
-            lines.push_back(t.line);
+            marks.push_back({t.line, t.column, std::max(1, static_cast<int>(t.text.size()))});
             report << QStringLiteral("Line %1: unexpected character '%2'")
                         .arg(t.line)
                         .arg(QString::fromStdString(t.text));
@@ -659,24 +719,34 @@ void MainWindow::checkScript() {
     Parser parser(std::move(tokens));
     Program program = parser.parseAll();
     for (const auto& err : program.errors) {
-        lines.push_back(err.line);
+        marks.push_back({err.line, err.column, std::max(1, err.length)});
         report << QStringLiteral("Line %1: %2")
                     .arg(err.line)
                     .arg(QString::fromStdString(err.message));
     }
-    std::sort(lines.begin(), lines.end());
-    lines.erase(std::unique(lines.begin(), lines.end()), lines.end());
+    for (const auto& err : checkScriptNames(program)) {
+        marks.push_back({err.line, err.column, std::max(1, err.length)});
+        report << QStringLiteral("Line %1: %2")
+                    .arg(err.line)
+                    .arg(QString::fromStdString(err.message));
+    }
     debug_->appendPlainText(QStringLiteral("—— Script check ——"));
     if (report.isEmpty()) {
         debug_->appendPlainText(QStringLiteral("No errors found."));
+        if (statusLabel_) statusLabel_->setText(QStringLiteral("No errors found."));
         QMessageBox::information(this, QStringLiteral("Check for Errors"),
                                  QStringLiteral("No errors found."));
         return;
     }
-    ed->setErrorLines(lines);
+    ed->setErrorMarks(marks);
     for (const QString& line : report) debug_->appendPlainText(line);
+    if (statusLabel_)
+        statusLabel_->setText(QStringLiteral("Line: %1 · %2 error(s)")
+                                  .arg(marks.front().line)
+                                  .arg(report.size()));
     QMessageBox::warning(this, QStringLiteral("Check for Errors"),
-                         QStringLiteral("%1 error(s) found.\n\n%2")
+                         QStringLiteral("%1 error(s) found. The caret is on the first one.\n\n"
+                                        "You can still press Run — good lines will still work.\n\n%2")
                              .arg(report.size())
                              .arg(report.join(QLatin1Char('\n'))));
 }

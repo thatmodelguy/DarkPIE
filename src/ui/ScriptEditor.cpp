@@ -144,15 +144,22 @@ void ScriptEditor::resizeEvent(QResizeEvent* event) {
 void ScriptEditor::lineNumberAreaPaintEvent(QPaintEvent* event) {
     QPainter painter(lineNumberArea_);
     painter.fillRect(event->rect(), QColor(30, 33, 39));
-    painter.setPen(QColor(120, 124, 132));
     QTextBlock block = firstVisibleBlock();
     int blockNumber = block.blockNumber();
     int top = qRound(blockBoundingGeometry(block).translated(contentOffset()).top());
     int bottom = top + qRound(blockBoundingRect(block).height());
     while (block.isValid() && top <= event->rect().bottom()) {
         if (block.isVisible() && bottom >= event->rect().top()) {
+            const int line = blockNumber + 1;
+            if (errorLineNumbers_.contains(line)) {
+                painter.fillRect(0, top, lineNumberArea_->width(), fontMetrics().height(),
+                                 QColor(160, 40, 40));
+                painter.setPen(QColor(255, 210, 210));
+            } else {
+                painter.setPen(QColor(120, 124, 132));
+            }
             painter.drawText(0, top, lineNumberArea_->width() - 6, fontMetrics().height(), Qt::AlignRight,
-                             QString::number(blockNumber + 1));
+                             QString::number(line));
         }
         block = block.next();
         top = bottom;
@@ -162,34 +169,68 @@ void ScriptEditor::lineNumberAreaPaintEvent(QPaintEvent* event) {
 }
 
 void ScriptEditor::clearErrors() {
+    if (!errorLineNumbers_.isEmpty()) {
+        errorLineNumbers_.clear();
+        lineNumberArea_->update();
+    }
     setExtraSelections({});
 }
 
-void ScriptEditor::goToLine(int line) {
+void ScriptEditor::goToLine(int line) { goToPosition(line, 1); }
+
+void ScriptEditor::goToPosition(int line, int column) {
     if (line < 1) return;
     QTextBlock block = document()->findBlockByNumber(line - 1);
     if (!block.isValid()) return;
     QTextCursor cursor(block);
+    const int col = std::max(0, column - 1);
+    cursor.setPosition(block.position() + std::min(col, block.length() - 1));
     setTextCursor(cursor);
     centerCursor();
 }
 
 void ScriptEditor::setErrorLines(const QList<int>& lines) {
+    QList<ScriptErrorMark> marks;
+    for (int line : lines) marks.push_back({line, 1, 0});
+    setErrorMarks(marks);
+}
+
+void ScriptEditor::setErrorMarks(const QList<ScriptErrorMark>& marks) {
     QList<QTextEdit::ExtraSelection> extras;
-    QColor bg(160, 36, 36, 110);
-    QColor mark(255, 90, 90);
-    for (int line : lines) {
-        if (line < 1) continue;
-        QTextBlock block = document()->findBlockByNumber(line - 1);
+    QSet<int> lines;
+    // Soft whole-line tint, then a red underline on the bad token (GlovePIE caret jump).
+    QColor lineBg(140, 40, 40, 55);
+    QColor tokenBg(180, 50, 50, 120);
+    QColor underline(255, 110, 110);
+    for (const auto& mark : marks) {
+        if (mark.line < 1) continue;
+        lines.insert(mark.line);
+        QTextBlock block = document()->findBlockByNumber(mark.line - 1);
         if (!block.isValid()) continue;
-        QTextEdit::ExtraSelection sel;
-        sel.format.setBackground(bg);
-        sel.format.setProperty(QTextFormat::FullWidthSelection, true);
-        sel.format.setUnderlineColor(mark);
-        sel.cursor = QTextCursor(block);
-        sel.cursor.clearSelection();
-        extras.push_back(sel);
+
+        QTextEdit::ExtraSelection lineSel;
+        lineSel.format.setBackground(lineBg);
+        lineSel.format.setProperty(QTextFormat::FullWidthSelection, true);
+        lineSel.cursor = QTextCursor(block);
+        lineSel.cursor.clearSelection();
+        extras.push_back(lineSel);
+
+        if (mark.length > 0 && mark.column >= 1) {
+            const int start = block.position() + std::min(mark.column - 1, std::max(0, block.length() - 1));
+            const int avail = block.position() + block.length() - 1 - start;
+            const int len = std::max(1, std::min(mark.length, avail));
+            QTextEdit::ExtraSelection tok;
+            tok.format.setBackground(tokenBg);
+            tok.format.setUnderlineStyle(QTextCharFormat::WaveUnderline);
+            tok.format.setUnderlineColor(underline);
+            tok.cursor = QTextCursor(document());
+            tok.cursor.setPosition(start);
+            tok.cursor.setPosition(start + len, QTextCursor::KeepAnchor);
+            extras.push_back(tok);
+        }
     }
+    errorLineNumbers_ = lines;
+    lineNumberArea_->update();
     setExtraSelections(extras);
-    if (!lines.isEmpty()) goToLine(lines.front());
+    if (!marks.isEmpty()) goToPosition(marks.front().line, marks.front().column);
 }

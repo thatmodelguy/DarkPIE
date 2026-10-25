@@ -11,12 +11,14 @@ enum class AssignOp { Equal, ColonEqual, Arrow, PlusEqual, MinusEqual, StarEqual
 struct Expr {
     virtual ~Expr() = default;
     int line = 1;
+    int column = 1;
     int id = 0;
 };
 
 struct Stmt {
     virtual ~Stmt() = default;
     int line = 1;
+    int column = 1;
     int id = 0;
 };
 
@@ -114,6 +116,8 @@ struct BetweenExpr : Expr {
 
 struct ParseError {
     int line = 1;
+    int column = 1;
+    int length = 1;
     std::string message;
 };
 

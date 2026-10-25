@@ -19,6 +19,7 @@ endif()
 add_library(darkpie_core STATIC
     src/lang/Lexer.cpp
     src/lang/Parser.cpp
+    src/lang/ScriptCheck.cpp
     src/lang/Vm.cpp
     src/devices/DeviceBus.cpp
     src/devices/KeyboardDevice.cpp

@@ -831,11 +831,8 @@ Vm::Flow Vm::exec(const Stmt& stmt, DeviceBus& bus, bool inIf) {
 
 void Vm::tick(DeviceBus& bus) {
     bus_ = &bus;
-    if (!program_.error.empty()) {
-        error_ = program_.error;
-        errorLine_ = program_.errorLine;
-        return;
-    }
+    // Run whatever parsed cleanly. Parse problems are reported at load time so a
+    // false positive does not leave the script dead, the way GlovePIE kept going.
     execList(program_.statements, bus, false);
 }
 

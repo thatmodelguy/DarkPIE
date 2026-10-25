@@ -26,6 +26,7 @@ private:
     bool matchAny(std::initializer_list<TokenKind> kinds);
     Token consume();
     void fail(const std::string& msg);
+    void expect(TokenKind k, const char* name);
     void synchronize();
     void fillProgram(Program& p);
 
@@ -48,5 +49,5 @@ private:
     ExprPtr postfix();
     ExprPtr primary();
     ExprPtr applyUnits(ExprPtr inner);
-    ExprPtr finishCall(std::string name, int line);
+    ExprPtr finishCall(std::string name, int line, int column = 1);
 };

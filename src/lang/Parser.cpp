@@ -35,11 +35,18 @@ Token Parser::consume() {
 }
 
 void Parser::fail(const std::string& msg) {
-    errors_.push_back({peek().line, msg});
+    const Token& t = peek();
+    const int len = t.text.empty() ? 1 : static_cast<int>(t.text.size());
+    errors_.push_back({t.line, t.column, len, msg});
     if (error_.empty()) {
         error_ = msg;
-        errorLine_ = peek().line;
+        errorLine_ = t.line;
     }
+}
+
+void Parser::expect(TokenKind k, const char* name) {
+    if (match(k)) return;
+    fail(std::string(name) + " expected (instead of " + tokenDisplay(peek()) + ")");
 }
 
 void Parser::synchronize() {
@@ -56,7 +63,7 @@ void Parser::fillProgram(Program& p) {
     } else {
         p.error = error_;
         p.errorLine = errorLine_;
-        if (!error_.empty()) p.errors.push_back({errorLine_, error_});
+        if (!error_.empty()) p.errors.push_back({errorLine_, 1, 1, error_});
     }
 }
 
@@ -149,26 +156,30 @@ StmtPtr Parser::statement() {
         bool nextAssign = peek(1).kind == TokenKind::Equal || peek(1).kind == TokenKind::ColonEqual ||
                           peek(1).kind == TokenKind::PlusEqual;
         if (!nextParen && !nextAssign && isZeroArg()) {
-            consume();
+            Token id = consume();
             auto call = std::make_unique<CallExpr>();
             call->name = n;
-            call->line = line;
+            call->line = id.line;
+            call->column = id.column;
             call->id = nextId_++;
             auto stmt = std::make_unique<ExprStmt>();
-            stmt->line = line;
+            stmt->line = id.line;
+            stmt->column = id.column;
             stmt->id = nextId_++;
             stmt->expr = std::move(call);
             return stmt;
         }
         if (!nextParen && !nextAssign && isOneArg() && peek(1).kind != TokenKind::Eof && peek(1).line == line) {
-            consume();
+            Token id = consume();
             auto call = std::make_unique<CallExpr>();
             call->name = n;
-            call->line = line;
+            call->line = id.line;
+            call->column = id.column;
             call->id = nextId_++;
             call->args.push_back(expression());
             auto stmt = std::make_unique<ExprStmt>();
-            stmt->line = line;
+            stmt->line = id.line;
+            stmt->column = id.column;
             stmt->id = nextId_++;
             stmt->expr = std::move(call);
             return stmt;
@@ -266,7 +277,7 @@ StmtPtr Parser::statement() {
         stmt->expr = std::move(expr);
         return stmt;
     }
-    fail("unexpected text; expected an assignment, if, wait, or function call");
+    fail("assignment, if, wait, or function call expected (instead of " + tokenDisplay(peek()) + ")");
     return nullptr;
 }
 
@@ -452,7 +463,7 @@ StmtPtr Parser::waitStatement() {
 std::vector<StmtPtr> Parser::braceBlock() {
     std::vector<StmtPtr> body;
     if (!match(TokenKind::LBrace)) {
-        fail("expected '{'");
+        expect(TokenKind::LBrace, "'{'");
         return body;
     }
     while (!check(TokenKind::RBrace) && !check(TokenKind::Eof) && error_.empty()) {
@@ -460,7 +471,7 @@ std::vector<StmtPtr> Parser::braceBlock() {
         auto s = statement();
         if (s) body.push_back(std::move(s));
     }
-    if (!match(TokenKind::RBrace)) fail("expected '}'");
+    expect(TokenKind::RBrace, "'}'");
     return body;
 }
 
@@ -710,7 +721,7 @@ ExprPtr Parser::unary() {
         u->op = "abs";
         u->inner = expression();
         u->line = line;
-        if (!match(TokenKind::Pipe)) fail("expected '|'");
+        expect(TokenKind::Pipe, "'|'");
         return u;
     }
     return postfix();
@@ -723,7 +734,7 @@ ExprPtr Parser::postfix() {
             !check(TokenKind::False) && !check(TokenKind::Var) && !check(TokenKind::Begin) &&
             !check(TokenKind::Wait) && !check(TokenKind::EndKw) && !check(TokenKind::To) &&
             !check(TokenKind::Mod) && !check(TokenKind::Div)) {
-            fail("expected property name");
+            fail("property name expected (instead of " + tokenDisplay(peek()) + ")");
             return expr;
         }
         Token nameTok = consume();
@@ -732,12 +743,13 @@ ExprPtr Parser::postfix() {
                 nameTok.text = std::to_string(static_cast<long long>(nameTok.number));
         }
         if (match(TokenKind::LParen)) {
-            auto call = finishCall(nameTok.text, nameTok.line);
+            auto call = finishCall(nameTok.text, nameTok.line, nameTok.column);
             static_cast<CallExpr*>(call.get())->object = std::move(expr);
             expr = std::move(call);
         } else {
             auto mem = std::make_unique<MemberExpr>();
             mem->line = nameTok.line;
+            mem->column = nameTok.column;
             mem->object = std::move(expr);
             mem->name = nameTok.text;
             expr = std::move(mem);
@@ -763,16 +775,17 @@ ExprPtr Parser::postfix() {
     return expr;
 }
 
-ExprPtr Parser::finishCall(std::string name, int line) {
+ExprPtr Parser::finishCall(std::string name, int line, int column) {
     auto call = std::make_unique<CallExpr>();
     call->name = std::move(name);
     call->line = line;
+    call->column = column;
     call->id = nextId_++;
     if (!match(TokenKind::RParen)) {
         do {
             call->args.push_back(expression());
         } while (match(TokenKind::Comma));
-        if (!match(TokenKind::RParen)) fail("expected ')'");
+        expect(TokenKind::RParen, "')'");
     }
     return call;
 }
@@ -839,26 +852,30 @@ ExprPtr Parser::primary() {
         auto name = std::make_unique<NameExpr>();
         name->name = "var";
         name->line = line;
+        name->column = tokens_[i_ - 1].column;
         if (match(TokenKind::Dot) && check(TokenKind::Identifier)) {
+            Token prop = consume();
             auto mem = std::make_unique<MemberExpr>();
-            mem->line = line;
+            mem->line = prop.line;
+            mem->column = prop.column;
             mem->object = std::move(name);
-            mem->name = consume().text;
+            mem->name = prop.text;
             return mem;
         }
         return name;
     }
     if (check(TokenKind::Identifier)) {
         Token id = consume();
-        if (match(TokenKind::LParen)) return finishCall(id.text, id.line);
+        if (match(TokenKind::LParen)) return finishCall(id.text, id.line, id.column);
         auto name = std::make_unique<NameExpr>();
         name->name = id.text;
         name->line = id.line;
+        name->column = id.column;
         return name;
     }
     if (match(TokenKind::LParen)) {
         auto inner = expression();
-        if (!match(TokenKind::RParen)) fail("expected ')'");
+        expect(TokenKind::RParen, "')'");
         return inner;
     }
     if (match(TokenKind::LBracket)) {
@@ -870,9 +887,9 @@ ExprPtr Parser::primary() {
                 arr->elements.push_back(expression());
             } while (match(TokenKind::Comma));
         }
-        if (!match(TokenKind::RBracket)) fail("expected ']'");
+        expect(TokenKind::RBracket, "']'");
         return arr;
     }
-    fail("unexpected token");
+    fail("value expected (instead of " + tokenDisplay(peek()) + ")");
     return nullptr;
 }

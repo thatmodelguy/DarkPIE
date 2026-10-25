@@ -2,6 +2,7 @@
 
 #include "devices/SpeechDevice.h"
 #include "lang/Lexer.h"
+#include "lang/ScriptCheck.h"
 
 #include <QWinEventNotifier>
 
@@ -38,14 +39,11 @@ QString Engine::lastPhrase() const {
 bool Engine::run(const QString& source) {
     stop();
     Lexer lexer(source.toStdString());
+    // Keep every statement that parsed so a bad line does not block the rest.
     Parser parser(lexer.tokenize());
-    Program program = parser.parse();
-    if (!program.error.empty()) {
-        emit errorMessage(QStringLiteral("Parse error (line %1): %2")
-                              .arg(program.errorLine)
-                              .arg(QString::fromStdString(program.error)));
-        return false;
-    }
+    Program program = parser.parseAll();
+    auto warnings = program.errors;
+    for (const auto& err : checkScriptNames(program)) warnings.push_back(err);
     vm_.load(std::move(program));
     bus_.reset();
     warningCursor_ = 0;
@@ -61,6 +59,15 @@ bool Engine::run(const QString& source) {
     armSpeechNotify();
     timer_.start();
     emit statusChanged();
+    if (!warnings.empty()) {
+        emit debugMessage(QStringLiteral("Script started with %1 warning(s). The good lines still run.")
+                              .arg(warnings.size()));
+        for (const auto& err : warnings) {
+            emit errorMessage(QStringLiteral("Line %1: %2")
+                                  .arg(err.line)
+                                  .arg(QString::fromStdString(err.message)));
+        }
+    }
     emit debugMessage(QStringLiteral("Script started. %1").arg(speechStatus_));
     if (!processIsElevated()) {
         emit errorMessage(QStringLiteral(

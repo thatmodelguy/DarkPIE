@@ -1,5 +1,6 @@
 #include "MainWindow.h"
 #include "ScriptEditor.h"
+#include "Theme.h"
 
 #include "devices/SpeechDevice.h"
 #include "lang/Lexer.h"
@@ -251,9 +252,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     stopAct_->setToolTip(QStringLiteral("Stop the script"));
     stopAct_->setEnabled(false);
     runMenu->addSeparator();
-    checkAct_ = runMenu->addAction(QStringLiteral("&Check for Errors (F7)"), this, &MainWindow::checkScript);
-    checkAct_->setShortcut(Qt::Key_F7);
-    checkAct_->setToolTip(QStringLiteral("Scan the script for errors (F7)"));
+    checkAct_ = runMenu->addAction(QStringLiteral("&Check for Errors"), this, &MainWindow::checkScript);
+    checkAct_->setToolTip(QStringLiteral("Scan the script for errors"));
     runMenu->addSeparator();
     findReplaceAct_ = runMenu->addAction(QStringLiteral("Search and &Replace"), this, &MainWindow::showFindReplace);
     findReplaceAct_->setShortcut(QKeySequence::Find);
@@ -285,6 +285,25 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     micGroup_->setExclusive(true);
     connect(micGroup_, &QActionGroup::triggered, this, &MainWindow::onMicrophoneChosen);
     connect(micMenu_, &QMenu::aboutToShow, this, &MainWindow::rebuildMicrophoneMenu);
+
+    auto* themeMenu = menuBar()->addMenu(QStringLiteral("&Theme"));
+    themeGroup_ = new QActionGroup(this);
+    themeGroup_->setExclusive(true);
+    const DarkPieThemeId activeTheme = currentDarkPieThemeId();
+    const DarkPieThemeId themeIds[] = {
+        DarkPieThemeId::NeonRed,
+        DarkPieThemeId::NeonGreen,
+        DarkPieThemeId::ChromeBlue,
+        DarkPieThemeId::Dark,
+    };
+    for (DarkPieThemeId id : themeIds) {
+        auto* act = themeMenu->addAction(darkPieThemeName(id));
+        act->setCheckable(true);
+        act->setData(static_cast<int>(id));
+        act->setChecked(id == activeTheme);
+        themeGroup_->addAction(act);
+    }
+    connect(themeGroup_, &QActionGroup::triggered, this, &MainWindow::onThemeChosen);
     {
         QSettings settings;
         if (settings.value(QStringLiteral("micVolumeHold")).toBool()) {
@@ -829,6 +848,24 @@ void MainWindow::toggleSleepWake() {
         if (ed) engine_.run(ed->toPlainText());
     }
     updateRunningUi();
+}
+
+void MainWindow::onThemeChosen(QAction* action) {
+    if (!action) return;
+    const auto id = static_cast<DarkPieThemeId>(action->data().toInt());
+    if (auto* app = qobject_cast<QApplication*>(QCoreApplication::instance())) {
+        applyDarkPieTheme(*app, id);
+    }
+    saveDarkPieThemeId(id);
+    applyThemeToEditors();
+}
+
+void MainWindow::applyThemeToEditors() {
+    if (!tabs_) return;
+    for (int i = 0; i < tabs_->count(); ++i) {
+        if (auto* ed = qobject_cast<ScriptEditor*>(tabs_->widget(i)))
+            ed->applyThemeColors();
+    }
 }
 
 void MainWindow::openSpeechTraining() {

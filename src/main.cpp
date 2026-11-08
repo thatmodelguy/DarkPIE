@@ -10,7 +10,7 @@ int main(int argc, char* argv[]) {
     app.setApplicationName(QStringLiteral("DarkPIE"));
     app.setOrganizationName(QStringLiteral("DarkPIE"));
     app.setWindowIcon(QIcon(QStringLiteral(":/icons/darkpie.png")));
-    applyDarkPieTheme(app);
+    applyDarkPieTheme(app, loadDarkPieThemeId());
 
     MainWindow w;
     w.setWindowIcon(QIcon(QStringLiteral(":/icons/darkpie.png")));

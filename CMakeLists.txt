@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(DarkPIE VERSION 0.1.6 LANGUAGES CXX)
+project(DarkPIE VERSION 0.1.7 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -38,6 +38,7 @@ add_executable(DarkPIE WIN32
     src/main.cpp
     src/ui/MainWindow.cpp
     src/ui/ScriptEditor.cpp
+    src/ui/Theme.cpp
     src/runtime/Engine.cpp
     res/darkpie.qrc
     res/app.rc

@@ -26,6 +26,7 @@ public:
     void clearErrors();
     void goToLine(int line);
     void goToPosition(int line, int column);
+    void applyThemeColors();
     int lineNumberAreaWidth() const;
     void lineNumberAreaPaintEvent(QPaintEvent* event);
 
@@ -38,5 +39,6 @@ private slots:
 
 private:
     QWidget* lineNumberArea_ = nullptr;
+    PieHighlighter* highlighter_ = nullptr;
     QSet<int> errorLineNumbers_;
 };

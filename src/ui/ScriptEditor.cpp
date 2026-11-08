@@ -1,4 +1,5 @@
 #include "ScriptEditor.h"
+#include "Theme.h"
 
 #include <algorithm>
 #include <QColor>
@@ -29,17 +30,18 @@ private:
 PieHighlighter::PieHighlighter(QTextDocument* parent) : QSyntaxHighlighter(parent) {}
 
 void PieHighlighter::highlightBlock(const QString& text) {
+    const DarkPieEditorColors colors = darkPieEditorColors();
     QTextCharFormat keyword;
-    keyword.setForeground(QColor(100, 190, 255));
+    keyword.setForeground(colors.keyword);
     QTextCharFormat fn;
-    fn.setForeground(QColor(168, 200, 255));
+    fn.setForeground(colors.function);
     QTextCharFormat str;
-    str.setForeground(QColor(110, 220, 150));
+    str.setForeground(colors.string);
     QTextCharFormat comment;
-    comment.setForeground(QColor(100, 118, 145));
+    comment.setForeground(colors.comment);
     comment.setFontItalic(true);
     QTextCharFormat number;
-    number.setForeground(QColor(255, 180, 120));
+    number.setForeground(colors.number);
 
     static const QStringList keywords = {
         QStringLiteral("if"), QStringLiteral("then"), QStringLiteral("else"), QStringLiteral("elseif"),
@@ -107,7 +109,7 @@ ScriptEditor::ScriptEditor(QWidget* parent) : QPlainTextEdit(parent) {
     setFont(font);
     setTabStopDistance(fontMetrics().horizontalAdvance(QLatin1Char(' ')) * 4);
     setLineWrapMode(QPlainTextEdit::NoWrap);
-    new PieHighlighter(document());
+    highlighter_ = new PieHighlighter(document());
     lineNumberArea_ = new LineNumberArea(this);
     connect(this, &QPlainTextEdit::textChanged, this, &ScriptEditor::clearErrors);
     connect(this, &QPlainTextEdit::blockCountChanged, this, &ScriptEditor::updateLineNumberAreaWidth);
@@ -143,7 +145,8 @@ void ScriptEditor::resizeEvent(QResizeEvent* event) {
 
 void ScriptEditor::lineNumberAreaPaintEvent(QPaintEvent* event) {
     QPainter painter(lineNumberArea_);
-    painter.fillRect(event->rect(), QColor(14, 24, 42));
+    const DarkPieEditorColors colors = darkPieEditorColors();
+    painter.fillRect(event->rect(), colors.gutterBg);
     QTextBlock block = firstVisibleBlock();
     int blockNumber = block.blockNumber();
     int top = qRound(blockBoundingGeometry(block).translated(contentOffset()).top());
@@ -153,10 +156,10 @@ void ScriptEditor::lineNumberAreaPaintEvent(QPaintEvent* event) {
             const int line = blockNumber + 1;
             if (errorLineNumbers_.contains(line)) {
                 painter.fillRect(0, top, lineNumberArea_->width(), fontMetrics().height(),
-                                 QColor(140, 36, 48));
-                painter.setPen(QColor(255, 210, 210));
+                                 colors.gutterErrorBg);
+                painter.setPen(colors.gutterErrorText);
             } else {
-                painter.setPen(QColor(110, 128, 155));
+                painter.setPen(colors.gutterText);
             }
             painter.drawText(0, top, lineNumberArea_->width() - 6, fontMetrics().height(), Qt::AlignRight,
                              QString::number(line));
@@ -174,6 +177,11 @@ void ScriptEditor::clearErrors() {
         lineNumberArea_->update();
     }
     setExtraSelections({});
+}
+
+void ScriptEditor::applyThemeColors() {
+    if (highlighter_) highlighter_->rehighlight();
+    if (lineNumberArea_) lineNumberArea_->update();
 }
 
 void ScriptEditor::goToLine(int line) { goToPosition(line, 1); }

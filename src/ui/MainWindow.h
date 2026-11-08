@@ -49,6 +49,7 @@ private slots:
     void openMicrophoneSetup();
     void openSpeechSettings();
     void toggleSleepWake();
+    void onThemeChosen(QAction* action);
 
 private:
     ScriptEditor* currentEditor() const;
@@ -65,6 +66,7 @@ private:
     void saveRecent(const QStringList& files) const;
     QString scriptDialogDirectory() const;
     void noteScriptDirectory(const QString& filePath);
+    void applyThemeToEditors();
 
     QTabWidget* tabs_ = nullptr;
     QPlainTextEdit* debug_ = nullptr;
@@ -81,6 +83,7 @@ private:
     QMenu* recentMenu_ = nullptr;
     QMenu* micMenu_ = nullptr;
     QActionGroup* micGroup_ = nullptr;
+    QActionGroup* themeGroup_ = nullptr;
     QAction* sleepWakeAct_ = nullptr;
     Engine engine_;
 };

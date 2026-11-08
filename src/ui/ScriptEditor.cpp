@@ -30,16 +30,16 @@ PieHighlighter::PieHighlighter(QTextDocument* parent) : QSyntaxHighlighter(paren
 
 void PieHighlighter::highlightBlock(const QString& text) {
     QTextCharFormat keyword;
-    keyword.setForeground(QColor(108, 182, 255));
+    keyword.setForeground(QColor(100, 190, 255));
     QTextCharFormat fn;
-    fn.setForeground(QColor(210, 168, 255));
+    fn.setForeground(QColor(168, 200, 255));
     QTextCharFormat str;
-    str.setForeground(QColor(127, 212, 145));
+    str.setForeground(QColor(110, 220, 150));
     QTextCharFormat comment;
-    comment.setForeground(QColor(110, 118, 129));
+    comment.setForeground(QColor(100, 118, 145));
     comment.setFontItalic(true);
     QTextCharFormat number;
-    number.setForeground(QColor(255, 171, 112));
+    number.setForeground(QColor(255, 180, 120));
 
     static const QStringList keywords = {
         QStringLiteral("if"), QStringLiteral("then"), QStringLiteral("else"), QStringLiteral("elseif"),
@@ -143,7 +143,7 @@ void ScriptEditor::resizeEvent(QResizeEvent* event) {
 
 void ScriptEditor::lineNumberAreaPaintEvent(QPaintEvent* event) {
     QPainter painter(lineNumberArea_);
-    painter.fillRect(event->rect(), QColor(30, 33, 39));
+    painter.fillRect(event->rect(), QColor(14, 24, 42));
     QTextBlock block = firstVisibleBlock();
     int blockNumber = block.blockNumber();
     int top = qRound(blockBoundingGeometry(block).translated(contentOffset()).top());
@@ -153,10 +153,10 @@ void ScriptEditor::lineNumberAreaPaintEvent(QPaintEvent* event) {
             const int line = blockNumber + 1;
             if (errorLineNumbers_.contains(line)) {
                 painter.fillRect(0, top, lineNumberArea_->width(), fontMetrics().height(),
-                                 QColor(160, 40, 40));
+                                 QColor(140, 36, 48));
                 painter.setPen(QColor(255, 210, 210));
             } else {
-                painter.setPen(QColor(120, 124, 132));
+                painter.setPen(QColor(110, 128, 155));
             }
             painter.drawText(0, top, lineNumberArea_->width() - 6, fontMetrics().height(), Qt::AlignRight,
                              QString::number(line));

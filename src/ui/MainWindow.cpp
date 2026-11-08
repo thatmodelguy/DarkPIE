@@ -17,7 +17,8 @@
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
-#include <QGridLayout>
+#include <QFont>
+#include <QFontInfo>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
@@ -74,38 +75,78 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
 
     auto* buttonBar = new QWidget(root);
     buttonBar->setObjectName(QStringLiteral("mainButtonBar"));
-    auto* barGrid = new QGridLayout(buttonBar);
-    barGrid->setContentsMargins(8, 6, 8, 6);
-    barGrid->setSpacing(8);
-
-    auto* runStop = new QWidget(buttonBar);
-    auto* runStopLay = new QHBoxLayout(runStop);
-    runStopLay->setContentsMargins(0, 0, 0, 0);
-    runStopLay->setSpacing(8);
-    auto* runBtn = new QToolButton(runStop);
-    auto* stopBtn = new QToolButton(runStop);
-    auto* checkBtn = new QToolButton(buttonBar);
-    runStopLay->addWidget(runBtn);
-    runStopLay->addWidget(stopBtn);
-    barGrid->addWidget(runStop, 0, 0, Qt::AlignCenter);
-    barGrid->addWidget(checkBtn, 0, 0, Qt::AlignRight);
+    auto* barLay = new QHBoxLayout(buttonBar);
+    barLay->setContentsMargins(14, 10, 14, 10);
+    barLay->setSpacing(12);
 
     auto* micVol = new QWidget(buttonBar);
     auto* micLay = new QHBoxLayout(micVol);
     micLay->setContentsMargins(0, 0, 0, 0);
     micLay->setSpacing(6);
+    auto* micIcon = new QLabel(micVol);
+    micIcon->setObjectName(QStringLiteral("micIcon"));
+    micIcon->setAlignment(Qt::AlignCenter);
+    micIcon->setToolTip(QStringLiteral("Microphone volume"));
+    {
+        QFont iconFont(QStringLiteral("Segoe Fluent Icons"));
+        if (!QFontInfo(iconFont).exactMatch())
+            iconFont = QFont(QStringLiteral("Segoe MDL2 Assets"));
+        if (QFontInfo(iconFont).family().contains(QStringLiteral("Segoe"), Qt::CaseInsensitive)) {
+            iconFont.setPointSize(13);
+            micIcon->setFont(iconFont);
+            micIcon->setText(QChar(0xE720)); // Microphone
+        } else {
+            micIcon->setText(QString::fromUtf8(u8"\U0001F3A4"));
+        }
+    }
     auto* micLabel = new QLabel(micVol);
+    micLabel->setObjectName(QStringLiteral("micPercent"));
+    micLabel->setMinimumWidth(micLabel->fontMetrics().horizontalAdvance(QStringLiteral("100%")));
+    micLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     auto* micSlider = new QSlider(Qt::Horizontal, micVol);
     micSlider->setRange(0, 100);
-    micSlider->setFixedWidth(140);
-    micSlider->setToolTip(QStringLiteral(
+    micSlider->setMinimumWidth(72);
+    micSlider->setMaximumWidth(160);
+    micSlider->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    const QString micTip = QStringLiteral(
         "Microphone volume used while a script is running. It is set when you press Run, before the "
-        "microphone opens, and the previous volume is put back when the script stops."));
+        "microphone opens, and the previous volume is put back when the script stops.");
+    micSlider->setToolTip(micTip);
+    micIcon->setToolTip(micTip);
+    micLabel->setToolTip(micTip);
+    micLay->addWidget(micIcon);
     micLay->addWidget(micLabel);
-    micLay->addWidget(micSlider);
-    barGrid->addWidget(micVol, 0, 0, Qt::AlignLeft);
+    micLay->addWidget(micSlider, 1);
+    micVol->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
+    micVol->setMaximumWidth(240);
 
-    auto* splitter = new QSplitter(Qt::Vertical, root);
+    runStopBtn_ = new QToolButton(buttonBar);
+    auto* checkBtn = new QToolButton(buttonBar);
+    runStopBtn_->setObjectName(QStringLiteral("runStopButton"));
+    checkBtn->setObjectName(QStringLiteral("checkButton"));
+    runStopBtn_->setCursor(Qt::PointingHandCursor);
+    checkBtn->setCursor(Qt::PointingHandCursor);
+    runStopBtn_->setCheckable(true);
+    runStopBtn_->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    runStopBtn_->setText(QStringLiteral("Run"));
+    runStopBtn_->setToolTip(QStringLiteral("Run the script"));
+    runStopBtn_->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
+    checkBtn->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
+    connect(runStopBtn_, &QToolButton::clicked, this, &MainWindow::toggleRunStop);
+
+    // Mic left, Run/Stop centered, Check right — real columns so they never overlap.
+    barLay->addWidget(micVol, 0, Qt::AlignVCenter | Qt::AlignLeft);
+    barLay->addStretch(1);
+    barLay->addWidget(runStopBtn_, 0, Qt::AlignVCenter);
+    barLay->addStretch(1);
+    barLay->addWidget(checkBtn, 0, Qt::AlignVCenter | Qt::AlignRight);
+
+    auto* content = new QWidget(root);
+    auto* contentLay = new QVBoxLayout(content);
+    contentLay->setContentsMargins(10, 8, 10, 8);
+    contentLay->setSpacing(8);
+
+    auto* splitter = new QSplitter(Qt::Vertical, content);
     auto* editorPane = new QWidget;
     editorPane->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     auto* editorLay = new QVBoxLayout(editorPane);
@@ -118,9 +159,10 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     tabs_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 
     findBar_ = new QWidget(editorPane);
+    findBar_->setObjectName(QStringLiteral("findBar"));
     findBar_->setVisible(false);
     auto* findLay = new QHBoxLayout(findBar_);
-    findLay->setContentsMargins(8, 6, 8, 6);
+    findLay->setContentsMargins(10, 8, 10, 8);
     findLay->setSpacing(8);
     findLay->addWidget(new QLabel(QStringLiteral("Find"), findBar_));
     findEdit_ = new QLineEdit(findBar_);
@@ -155,20 +197,31 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     editorLay->addWidget(tabs_, 1);
     editorLay->addWidget(findBar_); // sits under the Scripts tabs, above debug output
 
-    debug_ = new QPlainTextEdit;
+    auto* debugPanel = new QWidget;
+    debugPanel->setObjectName(QStringLiteral("debugPanel"));
+    auto* debugLay = new QVBoxLayout(debugPanel);
+    debugLay->setContentsMargins(0, 0, 0, 0);
+    debugLay->setSpacing(4);
+    auto* debugHeader = new QLabel(QStringLiteral("Debug Output"), debugPanel);
+    debugHeader->setObjectName(QStringLiteral("debugHeader"));
+    debug_ = new QPlainTextEdit(debugPanel);
+    debug_->setObjectName(QStringLiteral("debugOutput"));
     debug_->setReadOnly(true);
     debug_->setPlaceholderText(QStringLiteral("Debug output"));
     debug_->setMaximumBlockCount(2000);
     debug_->setMinimumHeight(72);
     debug_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    debugLay->addWidget(debugHeader);
+    debugLay->addWidget(debug_, 1);
     splitter->addWidget(editorPane);
-    splitter->addWidget(debug_);
+    splitter->addWidget(debugPanel);
     splitter->setStretchFactor(0, 5);
     splitter->setStretchFactor(1, 1);
     splitter->setSizes({560, 100});
 
+    contentLay->addWidget(splitter, 1);
     rootLay->addWidget(buttonBar);
-    rootLay->addWidget(splitter, 1);
+    rootLay->addWidget(content, 1);
     setCentralWidget(root);
 
     connect(tabs_, &QTabWidget::tabCloseRequested, this, [this](int i) {
@@ -193,14 +246,12 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
 
     auto* runMenu = menuBar()->addMenu(QStringLiteral("&Script"));
     runAct_ = runMenu->addAction(QStringLiteral("&Run"), this, &MainWindow::runScript);
-    runAct_->setShortcut(Qt::Key_F5);
-    runAct_->setCheckable(true);
-    runAct_->setToolTip(QStringLiteral("Run the script (F5)"));
+    runAct_->setToolTip(QStringLiteral("Run the script"));
     stopAct_ = runMenu->addAction(QStringLiteral("&Stop"), this, &MainWindow::stopScript);
-    stopAct_->setShortcut(Qt::Key_F6);
-    stopAct_->setToolTip(QStringLiteral("Stop the script (F6)"));
+    stopAct_->setToolTip(QStringLiteral("Stop the script"));
+    stopAct_->setEnabled(false);
     runMenu->addSeparator();
-    checkAct_ = runMenu->addAction(QStringLiteral("&Check for Errors"), this, &MainWindow::checkScript);
+    checkAct_ = runMenu->addAction(QStringLiteral("&Check for Errors (F7)"), this, &MainWindow::checkScript);
     checkAct_->setShortcut(Qt::Key_F7);
     checkAct_->setToolTip(QStringLiteral("Scan the script for errors (F7)"));
     runMenu->addSeparator();
@@ -247,13 +298,13 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
         }
         const int micPct = std::clamp(settings.value(QStringLiteral("micVolumePercent"), 100).toInt(), 0, 100);
         engine_.bus().speech().setCaptureVolumePercent(micPct);
-        micLabel->setText(QStringLiteral("Mic %1%").arg(micPct));
+        micLabel->setText(QStringLiteral("%1%").arg(micPct));
         {
             QSignalBlocker block(micSlider);
             micSlider->setValue(micPct);
         }
         connect(micSlider, &QSlider::valueChanged, this, [this, micLabel](int value) {
-            micLabel->setText(QStringLiteral("Mic %1%").arg(value));
+            micLabel->setText(QStringLiteral("%1%").arg(value));
             engine_.bus().speech().setCaptureVolumePercent(value);
             QSettings().setValue(QStringLiteral("micVolumePercent"), value);
         });
@@ -267,14 +318,13 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     }
     rebuildMicrophoneMenu();
 
-    runBtn->setDefaultAction(runAct_);
-    stopBtn->setDefaultAction(stopAct_);
     checkBtn->setDefaultAction(checkAct_);
-    runBtn->setToolButtonStyle(Qt::ToolButtonTextOnly);
-    stopBtn->setToolButtonStyle(Qt::ToolButtonTextOnly);
     checkBtn->setToolButtonStyle(Qt::ToolButtonTextOnly);
 
+    auto* statusDot = new QLabel(QStringLiteral("●"));
+    statusDot->setObjectName(QStringLiteral("statusDot"));
     statusLabel_ = new QLabel(QStringLiteral("Stopped"));
+    statusBar()->addWidget(statusDot);
     statusBar()->addWidget(statusLabel_, 1);
 
     connect(&engine_, &Engine::debugMessage, this, [this](const QString& t) {
@@ -451,6 +501,11 @@ void MainWindow::stopScript() {
     updateRunningUi();
 }
 
+void MainWindow::toggleRunStop() {
+    if (engine_.isRunning()) stopScript();
+    else runScript();
+}
+
 void MainWindow::onEngineStatus() {
     // Remember the level to put back, so a crash cannot leave the microphone changed.
     QSettings settings;
@@ -475,9 +530,21 @@ void MainWindow::onEngineStatus() {
 void MainWindow::updateRunningUi() {
     const bool running = engine_.isRunning();
     if (runAct_) {
-        runAct_->setChecked(running);
-        runAct_->setText(running ? QStringLiteral("&Running") : QStringLiteral("&Run"));
-        runAct_->setToolTip(running ? QStringLiteral("Script is running") : QStringLiteral("Run the script (F5)"));
+        runAct_->setEnabled(!running);
+        runAct_->setToolTip(running ? QStringLiteral("Script is already running")
+                                    : QStringLiteral("Run the script"));
+    }
+    if (stopAct_) {
+        stopAct_->setEnabled(running);
+        stopAct_->setToolTip(running ? QStringLiteral("Stop the script")
+                                     : QStringLiteral("No script is running"));
+    }
+    if (runStopBtn_) {
+        QSignalBlocker block(runStopBtn_);
+        runStopBtn_->setChecked(running);
+        runStopBtn_->setText(running ? QStringLiteral("Stop") : QStringLiteral("Run"));
+        runStopBtn_->setToolTip(running ? QStringLiteral("Stop the script")
+                                        : QStringLiteral("Run the script"));
     }
     for (int i = 0; i < tabs_->count(); ++i) {
         if (auto* ed = qobject_cast<ScriptEditor*>(tabs_->widget(i))) {

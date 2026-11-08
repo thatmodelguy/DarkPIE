@@ -14,6 +14,7 @@ class QActionGroup;
 class QMenu;
 class QLineEdit;
 class QCheckBox;
+class QToolButton;
 class QWidget;
 
 class MainWindow : public QMainWindow {
@@ -32,6 +33,7 @@ private slots:
     void saveFileAs();
     void runScript();
     void stopScript();
+    void toggleRunStop();
     void onEngineStatus();
     void openRecent();
     void clearRecent();
@@ -70,6 +72,7 @@ private:
     QAction* runAct_ = nullptr;
     QAction* stopAct_ = nullptr;
     QAction* checkAct_ = nullptr;
+    QToolButton* runStopBtn_ = nullptr;
     QAction* findReplaceAct_ = nullptr;
     QWidget* findBar_ = nullptr;
     QLineEdit* findEdit_ = nullptr;

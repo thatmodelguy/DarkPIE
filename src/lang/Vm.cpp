@@ -13,6 +13,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <functional>
 #include <random>
 
 namespace {
@@ -295,17 +296,26 @@ Value Vm::eval(const Expr& expr, DeviceBus& bus) {
             return Value::boolean(true);
         }
         if (fn == "press" || fn == "release") {
-            std::string path = call->args.empty() ? std::string() : targetPath(*call->args[0], bus);
-            for (char& c : path) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
             const bool down = fn == "press";
-            auto dot = path.find('.');
-            std::string root = dot == std::string::npos ? path : path.substr(0, dot);
-            std::string rest = dot == std::string::npos ? std::string() : path.substr(dot + 1);
-            if (root == "mouse" || root == "fakemouse" || root == "realmouse") {
-                bus.mouse().set(rest, Value::boolean(down));
-            } else {
-                bus.keyboard().setHeld(rest.empty() ? root : rest, down);
-            }
+            std::function<void(const Expr&)> apply = [&](const Expr& target) {
+                if (auto* bin = dynamic_cast<const BinaryExpr*>(&target);
+                    bin && (bin->op == "+" || bin->op == "and")) {
+                    apply(*bin->left);
+                    apply(*bin->right);
+                    return;
+                }
+                std::string path = targetPath(target, bus);
+                for (char& c : path) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                auto dot = path.find('.');
+                std::string root = dot == std::string::npos ? path : path.substr(0, dot);
+                std::string rest = dot == std::string::npos ? std::string() : path.substr(dot + 1);
+                if (root == "mouse" || root == "fakemouse" || root == "realmouse") {
+                    bus.mouse().set(rest, Value::boolean(down));
+                } else {
+                    bus.keyboard().setHeld(rest.empty() ? root : rest, down);
+                }
+            };
+            if (!call->args.empty()) apply(*call->args[0]);
             return Value::boolean(true);
         }
         if (fn == "type") {
@@ -675,6 +685,13 @@ Value Vm::eval(const Expr& expr, DeviceBus& bus) {
 }
 
 void Vm::assign(const Expr& target, const Value& value, DeviceBus& bus, bool force) {
+    // mouse.leftbutton+mouse.rightbutton (and key chords written the same way)
+    // must hold each side; concatenating into one path silently failed for mouse.
+    if (auto* bin = dynamic_cast<const BinaryExpr*>(&target); bin && (bin->op == "+" || bin->op == "and")) {
+        assign(*bin->left, value, bus, force);
+        assign(*bin->right, value, bus, force);
+        return;
+    }
     if (auto* call = dynamic_cast<const CallExpr*>(&target); call && call->name == "toggle" && !call->args.empty()) {
         // Flips once each time the condition turns on, starting from the
         // target's real state, so another line releasing it is respected.
@@ -683,8 +700,16 @@ void Vm::assign(const Expr& target, const Value& value, DeviceBus& bus, bool for
         const bool rising = on && !wasOn;
         wasOn = on;
         if (!rising) return;
-        std::string path = targetPath(*call->args[0], bus);
-        bus.set(path, Value::boolean(!bus.get(path).isTruthy()), true);
+        std::function<void(const Expr&)> flip = [&](const Expr& leaf) {
+            if (auto* bin = dynamic_cast<const BinaryExpr*>(&leaf); bin && (bin->op == "+" || bin->op == "and")) {
+                flip(*bin->left);
+                flip(*bin->right);
+                return;
+            }
+            const std::string path = targetPath(leaf, bus);
+            bus.set(path, Value::boolean(!bus.get(path).isTruthy()), true);
+        };
+        flip(*call->args[0]);
         return;
     }
     bus.set(targetPath(target, bus), value, force);

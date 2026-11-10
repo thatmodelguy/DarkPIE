@@ -21,6 +21,18 @@ std::string lower(std::string s) {
     return s;
 }
 
+// Bare names used in chords like mouse.LeftButton+RightButton.
+// Keep "left"/"right"/"middle" as keyboard arrows / keys, not mouse aliases.
+bool isBareMouseButtonName(const std::string& root) {
+    static const char* names[] = {"leftbutton", "rightbutton", "middlebutton", "lbutton", "rbutton",
+                                  "mbutton",    "xbutton1",    "xbutton2",     "x1",      "x2",
+                                  "button4",    "button5",     "button6",      "button7", "button8"};
+    for (auto n : names) {
+        if (root == n) return true;
+    }
+    return false;
+}
+
 bool isUnsupportedDevice(const std::string& root) {
     static const char* names[] = {"p5", "glove", "kinect", "trackir", "falcon", "spaceball",
                                   "rower", "bdremote"};
@@ -340,6 +352,7 @@ Value DeviceBus::get(const std::string& pathRaw) {
         warnOnce(root, "Unsupported device '" + root + "'.");
         return Value::boolean(false);
     }
+    if (rest.empty() && isBareMouseButtonName(root)) return mouse_->get(root);
     if (rest.empty() && KeyboardDevice::isKnownKey(root)) return keyboard_->get(root);
     warnOnce(path, "Unknown identifier '" + pathRaw + "'.");
     return Value::boolean(false);
@@ -420,6 +433,10 @@ void DeviceBus::set(const std::string& pathRaw, const Value& value, bool force) 
         return;
     }
     if (rest.empty()) {
+        if (isBareMouseButtonName(root)) {
+            mouse_->set(root, value);
+            return;
+        }
         keyboard_->setHeld(root, value.isTruthy());
         return;
     }

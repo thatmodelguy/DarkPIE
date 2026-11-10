@@ -901,6 +901,43 @@ int main() {
         check(bus.keyboard().heldThisFrame().count("alt") > 0, "alt+backspace holds alt");
         check(bus.keyboard().heldThisFrame().count("backspace") > 0, "alt+backspace holds backspace");
     }
+    {
+        Program p = parse(
+            "mouse.rightbutton+mouse.leftbutton = KeepDown(Microphone.Said(\"power\"), 1)\n");
+        if (!p.error.empty())
+            std::cerr << "mouse chord parse: " << p.error << " line " << p.errorLine << "\n";
+        check(p.error.empty(), "parse mouse.rightbutton+mouse.leftbutton KeepDown");
+        DeviceBus bus;
+        bus.dryRun = true;
+        Vm vm;
+        vm.load(parse("mouse.rightbutton+mouse.leftbutton = true\n"));
+        bus.beginFrame();
+        vm.tick(bus);
+        bus.endFrame();
+        check(bus.get("mouse.leftbutton").isTruthy(), "mouse chord holds leftbutton");
+        check(bus.get("mouse.rightbutton").isTruthy(), "mouse chord holds rightbutton");
+        vm.load(parse("mouse.leftbutton+mouse.rightbutton = false\n"));
+        bus.beginFrame();
+        vm.tick(bus);
+        bus.endFrame();
+        check(!bus.get("mouse.leftbutton").isTruthy(), "mouse chord release clears leftbutton");
+        check(!bus.get("mouse.rightbutton").isTruthy(), "mouse chord release clears rightbutton");
+
+        vm.load(parse("Key.A+mouse.leftbutton = true\n"));
+        bus.beginFrame();
+        vm.tick(bus);
+        bus.endFrame();
+        check(bus.keyboard().heldThisFrame().count("a") > 0, "key+mouse chord holds A");
+        check(bus.get("mouse.leftbutton").isTruthy(), "key+mouse chord holds leftbutton");
+
+        vm.load(parse("mouse.leftbutton+RightButton+MiddleButton = true\n"));
+        bus.beginFrame();
+        vm.tick(bus);
+        bus.endFrame();
+        check(bus.get("mouse.leftbutton").isTruthy(), "abbreviated mouse chord holds left");
+        check(bus.get("mouse.rightbutton").isTruthy(), "abbreviated mouse chord holds right");
+        check(bus.get("mouse.middlebutton").isTruthy(), "abbreviated mouse chord holds middle");
+    }
 
     if (g_failed) {
         std::cerr << g_failed << " test(s) failed\n";
